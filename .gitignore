@@ -1,0 +1,34 @@
+# 操作系统和IDE配置文件
+.DS_Store
+*.swo
+*.swp
+.idea/
+.vscode/
+
+# Python 缓存文件
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 虚拟环境文件夹 (根据您的环境名称修改)
+venv/
+env/
+.env
+
+# 数据文件 (我们不把大数据集放入代码库)
+/prepared_data/
+
+# 结果和输出文件 (这些是代码运行生成的，不是源代码)
+/results/
+/logs/
+
+# 临时文件或打包文件
+*.tar.gz
+*.zip
+dist/
+build/
+*.egg-info/
+*.pt
+*.json
+*.sdf

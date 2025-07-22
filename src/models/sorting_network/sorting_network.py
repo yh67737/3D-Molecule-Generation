@@ -1,0 +1,268 @@
+# 基础组件
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+# from torch_geometric.nn import EGNNConv 
+from egnn_conv import EGNNConv 
+from torch_geometric.utils import to_dense_batch
+import math
+
+class PositionalEncoding(nn.Module):
+    """
+    function：正弦/余弦位置编码模块-->编码仅与d_model和max_len有关，与词向量无关
+
+    """
+    def __init__(self, d_model: int, max_len: int = 500):
+        '''
+        Args:
+            d_model (int): The dimension of the embedding. 嵌入向量大小/节点特征h_0的维度大小
+            max_len (int): The maximum possible length of a sequence. 序列最大长度/最大原子数
+
+        '''
+        super(PositionalEncoding, self).__init__() # 构造方法初始化
+
+        ## 创建位置索引张量
+        # position张量包含所有可能的位置pos(从0到max_len-1)
+        # .unsqueeze(1)将position形状从 max_len]变为[max_len, 1]，为后续广播做准备
+        position = torch.arange(max_len, dtype=torch.float).unsqueeze(1) # [max_len, 1]
+
+        ## 计算频率：1 / 10000^(2i/d_model)
+        # torch.arange(0, d_model, 2)提取所有偶数维度索引[0, 2, 4, ...,](不包含d_model)
+        # `exp(x * (-log(y)))` 等价于 `y^(-x)`
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)) # [d_model//2]
+
+        ## 初始化位置编码矩阵
+        # 创建一个[max_len, d_model]大小的零矩阵，用于存放最终的编码结果
+        pe = torch.zeros(max_len, d_model)
+
+        ## 计算并填充pe偶数和奇数维度
+        # 利用PyTorch的广播机制，[max_len, 1]的position和[d_model/2]的div_term相乘得到[max_len, d_model//2]，其(pos, i)元素值为pos / 10000^(2i/d_model)
+        # pe[:, 0::2]选择所有偶数索引列
+        pe[:, 0::2] = torch.sin(position * div_term)
+        # pe[:, 1::2]选择所有奇数索引列
+        pe[:, 1::2] = torch.cos(position * div_term)
+
+        ## 将pe注册为模型的buffer
+        # register_buffer将pe矩阵作为模型状态的一部分保存下来(state_dict)
+        # 但它不是模型的参数，不会在反向传播时被更新梯度
+        # 对于存储固定的非训练的数据（如位置编码）是标准做法；好处是当调用 model.to(device) 时，这个buffer会自动被移动到相应设备
+        self.register_buffer('pe', pe) 
+
+    def forward(self, t: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            t (torch.Tensor): A tensor of shape [num_nodes] containing position indices.
+        Returns:
+            torch.Tensor: Positional encodings of shape [num_nodes, d_model].
+        """
+        # 输入t包含需要查找的位置索引,如[0, 1, 2, 0](张量)
+        # self.pe是预先计算好的[max_len, d_model]大小的编码表
+        # PyTorch索引机制将从pe表中取出第0, 1, 2, 0行，组成[4, d_model]的输出张量返回
+        return self.pe[t]
+
+class GNN_Core(nn.Module): # 图特征提取
+    """
+    function：图神经网络，使用EGNN同时处理并融合节点特征、边特征以及3D空间坐标
+
+    """
+    def __init__(self, feature_dim: int, hidden_dim: int, edge_feature_dim: int, num_layers: int = 3):
+        super(GNN_Core, self).__init__()
+        # 设定超参数
+        self.hidden_dim = hidden_dim
+
+        ## 定义一个ModuleList存储所有EGNN层；ModuleList是PyTorch中用来保存子模块列表的容器，能确保所有层都被正确注册为模型参数
+        self.egnn_layers = nn.ModuleList()
+        # 输入层
+        self.egnn_layers.append(
+            EGNNConv(feature_dim, hidden_dim, hidden_dim, edge_attr_nf=edge_feature_dim, attention=True)
+        )
+        # 隐藏层
+        for _ in range(num_layers - 1):
+            self.egnn_layers.append(
+                EGNNConv(hidden_dim, hidden_dim, hidden_dim, edge_attr_nf=edge_feature_dim, attention=True)
+            )
+
+    def forward(self, h: torch.Tensor, coords: torch.Tensor, edge_index: torch.Tensor, edge_attr: torch.Tensor) -> torch.Tensor:  
+         ## 循环所有EGNN层，进行多轮消息传递
+        for egnn_conv in self.egnn_layers:
+            h, coords = egnn_conv(h, coords, edge_index, edge_attr=edge_attr)
+        
+        ## 返回最终的节点特征h，融合了图拓扑、3D几何和化学键信息
+        # 注意：只返回h，因为对于排序任务，主要关心最终的节点表示；更新后的coords在EGNN内部计算中起作用，但不被模块输出
+        return h
+
+# SortingNetwork主模型
+class SortingNetwork(nn.Module):
+    def __init__(self, num_atom_features: int, num_bond_features: int, hidden_dim: int,
+                 gnn_layers: int = 3, max_nodes: int = 500):
+        super(SortingNetwork, self).__init__()
+        
+        # 设定超参数：隐藏层维度和最大图节点数
+        self.hidden_dim = hidden_dim
+        self.max_nodes = max_nodes
+
+        ### 实例化基本组件
+        
+        ## 输入特征投影层(nn.Linear)：将原始原子特征维度(num_atom_features)映射到网络内部统一的隐藏维度(hidden_dim)
+        # 确保后续所有特征向量维度一致，便于相加和处理
+        self.input_proj = nn.Linear(num_atom_features, hidden_dim) 
+
+        ## 成环信息独立嵌入层(默认输入特征是2维 num_embeddings=2)，映射为hidden_dim维的可学习向量
+        self.ring_embedding = nn.Embedding(num_embeddings=2, embedding_dim=hidden_dim) 
+
+        ## 位置编码模块：实例化正弦/余弦位置编码模块，将用于在自回归的每一步为已选择节点添加其在序列中的位置信息
+        self.pe_module = PositionalEncoding(d_model=hidden_dim, max_len=max_nodes)
+        
+        # 图网络模块：实例化基于EGNN的图特征提取器，处理并融合节点、边、3D坐标三类信息 
+        self.gnn_core = GNN_Core(
+            feature_dim=hidden_dim,
+            hidden_dim=hidden_dim, 
+            edge_feature_dim=num_bond_features, 
+            num_layers=gnn_layers
+        )
+
+        ## 输出MLP(nn.Sequential)：两层的MLP，将GNN输出的高维节点特征转换为分数logits
+        self.output_mlp = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim * 2),
+            nn.ReLU(),
+            nn.Linear(hidden_dim * 2, 1)
+        )
+
+    def forward(self, data): 
+        """
+        实现自回归的序列采样，支持批处理
+        Args:
+            data (torch_geometric.data.Batch): A batch of graphs.
+        Returns:
+            tuple[list[list[int]], torch.Tensor]:
+                - A list of sampled orderings for each graph in the batch.
+                - A tensor of total log probabilities for each sequence, shape [batch_size].
+        """
+        ## 数据解包与初始化
+        # 从PyG的Batch对象中取出所有需要数据
+        x, pos, edge_index, edge_attr = data.x, data.pos, data.edge_index, data.edge_attr
+        pring_out, batch = data.pring_out, data.batch # data.batch提供各个节点的身份证
+        
+        # 当前批次的图数量
+        batch_size = data.num_graphs
+        # 当前批次所有图的节点总数
+        num_total_nodes = data.num_nodes
+        # 获取当前设备（CPU/GPU）
+        device = x.device
+
+        ## 创建节点基础特征
+        # 将原始原子特征投影到隐藏维度
+        x_proj = self.input_proj(x)
+        # 将成环标志(0/1)通过Embedding层映射为高维向量
+        ring_embeds = self.ring_embedding(pring_out.long().squeeze(-1)) 
+        # 获得融合了原子类型和成环信息的基础特征
+        x_base = x_proj + ring_embeds  # shape：[num_total_nodes,hidden_dim]
+
+        ## 初始化自回归循环的状态变量
+        # node_positions记录每个节点在序列中的位置(t=0,1,2...), 全部初始化为-1表示未选中
+        node_positions = torch.full((num_total_nodes,), -1, dtype=torch.long, device=device)
+        # nodes_selected_mask记录每个节点是否已被选择，用于屏蔽；初始化为0(全未选中)
+        nodes_selected_mask = torch.zeros(num_total_nodes, dtype=torch.bool, device=device) # 二维张量
+        # total_log_probs存储批次中的每个图的序列累计对数概率 -->产生当前序列的概率大小
+        total_log_probs = torch.zeros(batch_size, device=device)
+        
+        ## 获取批次中每个图的真实大小，用于控制循环
+        # to_dense_batch返回掩码标记出哪些节点属于哪个图  
+        _, real_nodes_mask = to_dense_batch(x, batch)
+        num_nodes_per_graph = real_nodes_mask.sum(dim=1)
+        # 循环次数由批次中最大图的节点数决定
+        max_num_nodes_in_batch = int(num_nodes_per_graph.max())
+        
+        ## 准备列表用于存储每个图最终的排序结果(全局索引)
+        orderings = [[] for _ in range(batch_size)]
+
+        # 步骤a:自回归循环
+        for t in range(max_num_nodes_in_batch):
+            # 步骤b: 动态创建当前步t的节点特征
+            x_t = x_base.clone() # 克隆一份原始特征，进行动态修改
+            # 只为已选择的节点添加位置编码
+            if t > 0: # 从第二步(t=1)开始，需要添加位置编码
+                # 找到所有已被选择节点的全局索引
+                selected_nodes_indices = nodes_selected_mask.nonzero().squeeze(-1)
+                # 找到这些节点被选择时的位置（0,1,2...）
+                positions_of_selected = node_positions[selected_nodes_indices]
+                # 为已选节点添加位置编码
+                x_t[selected_nodes_indices] += self.pe_module(positions_of_selected) 
+
+            # 步骤c: GNN计算
+            # 将动态更新后的节点特征和图的其他信息传入GNN
+            node_embeddings = self.gnn_core(x_t, pos, edge_index, edge_attr) # edge_index根据PyG的稀疏批处理测略相应地做了改变，不再保持每张图从0开始编号，而是被转换成了全局编号
+            # 将GNN输出的嵌入通过MLP转换为logits
+            logits = self.output_mlp(node_embeddings).squeeze(-1) # Shape: [num_total_nodes]
+
+            # 步骤d: 屏蔽已选择节点
+            # 将已选节点的logits设为负无穷，使其softmax后概率为0
+            logits[nodes_selected_mask] = -float('inf')
+
+            # 批处理softmax和采样
+            # 将所有节点logits从长向量转换为[batch_size, max_nodes]矩阵
+            dense_logits, _ = to_dense_batch(logits, batch, fill_value=-float('inf')) 
+            # 对每个图独立进行Softmax，得到概率分布
+            probs = F.softmax(dense_logits, dim=1) # Shape: [batch_size, max_nodes_in_batch]
+            
+            # 步骤e: 采样
+            # 创建一个掩码标记出哪些图还没有完成排序(循环次数t小于其节点数)
+            graphs_not_done_mask = (t < num_nodes_per_graph)
+            if not graphs_not_done_mask.any():
+                break # 所有图都已完成排序
+            
+            # 只对未完成的图进行采样(局部索引)
+            sampled_local_indices = torch.multinomial(probs[graphs_not_done_mask].detach(), num_samples=1).squeeze(-1) ### 疑问：效果是什么
+
+            # 步骤f: 记录对数概率并更新状态
+            # 使用.gather()找到被采样节点的概率并计算对数
+            log_prob_t = torch.log(probs[graphs_not_done_mask].gather(1, sampled_local_indices.unsqueeze(-1)).squeeze(-1) + 1e-9) 
+            # 累加到对应的图上
+            total_log_probs[graphs_not_done_mask] += log_prob_t 
+
+             # 将采样的局部索引(如第i个图中的第j个节点)转换为全局索引
+             # data.ptr记录了每个图在长向量中的起始位置，用于实现转换
+            batch_indices_not_done = graphs_not_done_mask.nonzero().squeeze(-1)
+
+            # 检查data对象是否有ptr属性，没有则手动计算
+            ptr = data.ptr if hasattr(data, 'ptr') else None
+            if ptr is None:
+                # 手动计算ptr
+                ptr = torch.cat([torch.tensor([0], device=device), num_nodes_per_graph.cumsum(dim=0)])
+
+            ptr_not_done = data.ptr[batch_indices_not_done]
+            sampled_global_indices = ptr_not_done + sampled_local_indices
+
+            # 更新全局状态
+            nodes_selected_mask[sampled_global_indices] = True
+            node_positions[sampled_global_indices] = t
+            
+            # 记录排序结果
+            for i, global_idx in enumerate(sampled_global_indices): 
+                graph_idx = batch_indices_not_done[i]
+                orderings[graph_idx].append(global_idx.item())
+        
+        ## 将排序结果从全局索引转化为局部索引
+        local_orderings = []
+        for i in range(batch_size):
+            # 获取第i个图的全局索引顺序
+            global_ordering_list = orderings[i]
+            if not global_ordering_list: # 如果某个图没有节点，顺序为空
+                local_orderings.append([])
+                continue
+
+            # 转换为Tensor，方便进行批处理减法
+            global_ordering_tensor = torch.tensor(orderings[i], device=device, dtype=torch.long)
+            
+            # 获取第i个图在PyG批次大图中的起始索引(指针)
+            # data.ptr是形如[0, N1, N1+N2, ...]的张量，N1是第一个图的节点数
+            graph_start_ptr = data.ptr[i] if hasattr(data, 'ptr') else ptr[i]
+            
+            # 全局索引减去起始指针，就得到了局部索引
+            local_ordering_tensor = global_ordering_tensor - graph_start_ptr
+            
+            # 将结果存入新的列表
+            local_orderings.append(local_ordering_tensor.tolist())
+
+        # 返回转换后的局部索引顺序
+        return local_orderings, total_log_probs
