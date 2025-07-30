@@ -18,6 +18,10 @@ env/
 
 # 数据文件 (我们不把大数据集放入代码库)
 /prepared_data/
+/output/
+/saved_args/
+/data_splits/
+
 
 # 结果和输出文件 (这些是代码运行生成的，不是源代码)
 /results/
