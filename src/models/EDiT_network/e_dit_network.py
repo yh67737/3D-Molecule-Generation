@@ -4,13 +4,13 @@ import torch
 import torch.nn as nn
 from e3nn import o3
 from e3nn.o3 import Irreps
-from tensor_product_rescale import LinearRS, FullyConnectedTensorProductRescale
-from mul_head_graph_attention import get_norm_layer
-from layer_norm import TimestepEmbedder
+from .tensor_product_rescale import LinearRS, FullyConnectedTensorProductRescale
+from .mul_head_graph_attention import get_norm_layer
+from .layer_norm import TimestepEmbedder
 
 # 从您已经创建的文件中导入核心组件
-from input_embedding import InputEmbeddingLayer
-from e_dit_block import E_DiT_Block
+from .input_embedding import InputEmbeddingLayer
+from .e_dit_block import E_DiT_Block
 
 
 class MultiTaskHead(nn.Module):
@@ -191,44 +191,6 @@ class E_DiT_Network(nn.Module):
                 irreps_pre_attn=args.irreps_pre_attn
             )
             self.blocks.append(block)
-
-            # --- 对刚刚创建的 block 应用零初始化策略 ---
-            # 这确保了在训练开始时，残差分支的输出为0，使得 block 表现为恒等函数 (y = x + 0)
-
-            # --- 1. 节点路径 (Node Path) 零初始化 ---
-
-            # 初始化 GraphAttention 的最后一个线性投影层 (self.ga.proj)
-            # e3nn 的线性层，其权重在 .tp.weight 中
-            if hasattr(block.ga.proj, 'tp'):
-                torch.nn.init.constant_(block.ga.proj.tp.weight, 0)
-            if hasattr(block.ga.proj, 'bias') and block.ga.proj.bias is not None:
-                for b in block.ga.proj.bias:
-                    torch.nn.init.constant_(b, 0)
-
-            # 初始化 FeedForwardNetwork 的最后一个线性投影层 (self.node_ffn.fctp_2)
-            if hasattr(block.node_ffn.fctp_2, 'tp'):
-                torch.nn.init.constant_(block.node_ffn.fctp_2.tp.weight, 0)
-            if hasattr(block.node_ffn.fctp_2, 'bias') and block.node_ffn.fctp_2.bias is not None:
-                for b in block.node_ffn.fctp_2.bias:
-                    torch.nn.init.constant_(b, 0)
-
-            # --- 2. 边路径 (Edge Path) 零初始化 ---
-
-            # 初始化 EdgeUpdateNetwork 的最后一个 MLP 层 (self.edge_updater.edge_update_mlp[-1])
-
-            edge_updater_mlp = block.edge_updater.edge_update_mlp
-            if hasattr(edge_updater_mlp, 'tp') and hasattr(edge_updater_mlp.tp, 'weight'):
-                torch.nn.init.constant_(edge_updater_mlp.tp.weight, 0)
-            if hasattr(edge_updater_mlp, 'bias') and edge_updater_mlp.bias is not None:
-                for b in edge_updater_mlp.bias:
-                    torch.nn.init.constant_(b, 0)
-
-            # 初始化边的 FeedForwardNetwork 的最后一个线性投影层 (self.edge_ffn.fctp_2)
-            if hasattr(block.edge_ffn.fctp_2, 'tp'):
-                torch.nn.init.constant_(block.edge_ffn.fctp_2.tp.weight, 0)
-            if hasattr(block.edge_ffn.fctp_2, 'bias') and block.edge_ffn.fctp_2.bias is not None:
-                for b in block.edge_ffn.fctp_2.bias:
-                    torch.nn.init.constant_(b, 0)
             
         # (4) 最终层归一化
         self.final_norm = get_norm_layer(norm_layer)(
@@ -255,8 +217,8 @@ class E_DiT_Network(nn.Module):
         embedded_inputs = self.embedding_layer(data)
         h = embedded_inputs["node_input"]
         e = embedded_inputs["edge_input"]
-        print('h:', h)
-        print('e:', e)
+        # print('h:', h)
+        # print('e before edit:', e)
         # t_embed = self.time_embedding(t)  #未使用，归一层中自带时间嵌入
         
         # 步骤2：依次通过所有E-DiT Block，进行深度特征提纯
@@ -267,14 +229,16 @@ class E_DiT_Network(nn.Module):
 
             # 使用字典解包 ** 来传递所有参数，并单独传递时间步 t
             h, e = block(t=t, **embedded_inputs)
-        print('h before norm:', h)
-        print('e before norm:', e)
+            # print('h after block:', h)
+            # print('e after block:', e)
+        # print('h before norm:', h)
+        # print('e before norm:', e)
         # 步骤3：最终层归一化
         h = self.final_norm(h, t, data.batch)
         edge_batch = data.batch[data.edge_index[0]]
         e = self.final_edge_norm(e, t, edge_batch)
-        print('h after edit:', h)
-        print('e after edit:', e)
+        # print('h after edit:', h.shape)
+        # print('e after edit:', e.shape)
 
         # 步骤4：调用多任务输出头
         predictions = self.output_heads(
@@ -284,5 +248,4 @@ class E_DiT_Network(nn.Module):
             target_edge_mask=target_edge_mask,  # 直接使用传入的边掩码
             edge_index=data.edge_index  # 传入完整的边索引
         )
-        
         return predictions

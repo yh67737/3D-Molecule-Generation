@@ -1,5 +1,3 @@
-# 文件: generate.py
-
 import torch
 import torch.nn.functional as F
 from torch_geometric.data import Data, Batch
@@ -11,21 +9,30 @@ from src.training.scheduler import HierarchicalDiffusionScheduler
 # 辅助函数
 # ==============================================================================
 
-def get_ring_guidance(p_model, fragment: Data) -> Data:
-    """调用环指导网络更新环信息。框架函数。"""
-    print("  -> 调用环指导网络...")
-    # 假设 p_model 输入一个 Data 对象，输出一个带有新的 pring_out 的 Data 对象
-    # 这里我们只返回原样，您需要填充真实逻辑
-    # with torch.no_grad():
-    #     predicted_pring_out = p_model(fragment)
-    #     fragment.pring_out = (predicted_pring_out > 0.5).float()
-    return fragment
+def get_ring_guidance(p_model, fragment: Data, threshold=0.5) -> Data:
+    """
+    直接在输入的图上运行环结构预测（要求图已经包含 x, edge_index, edge_attr）。
 
-def sample_discrete_features(logits: torch.Tensor) -> torch.Tensor:
-    """从 logits 中采样，并返回 one-hot 编码。"""
-    probabilities = F.softmax(logits, dim=-1)
-    sampled_indices = torch.multinomial(probabilities, num_samples=1).squeeze(-1)
-    return F.one_hot(sampled_indices, num_classes=logits.shape[-1]).float()
+    Args:
+        graph (Data): PyG 图对象，需包含 x、edge_index、edge_attr。
+        model (nn.Module): 已训练好的 RingPredictor 模型。
+        threshold (float): 判定为“在环上”的概率阈值，默认 0.5。
+
+    Returns:
+        probs (Tensor): 每个节点属于环的概率，[num_nodes]
+        pred_mask (Tensor[bool]): 每个节点是否被预测为“在环上”
+    """
+    device = next(p_model.parameters()).device
+    fragment = fragment.to(device)
+
+    p_model.eval()
+    with torch.no_grad():
+        logits = p_model(fragment)
+        probs = torch.sigmoid(logits).squeeze(-1)
+        pred_mask = probs > threshold
+
+    fragment.pring_out = pred_mask.long().unsqueeze(1)  
+    return fragment  
 
 def check_connectivity(new_atom_idx: int, fragment: Data) -> bool:
     """检查新原子是否与现有片段有连接。"""
@@ -75,16 +82,22 @@ def generate_molecule(
     atom_type_idx = torch.randint(0, 5, (1,), device=device) # 输出单个元素的一维张量
     atom_type = F.one_hot(atom_type_idx, num_classes=6).float() # 6类，最后一类是吸收态
     
-    # b. 随机坐标
-    pos = torch.randn(1, 3, device=device)
-    pos = pos / torch.linalg.norm(pos) * torch.rand(1, 1, device=device) # 在单位球内
+    # b. 设置坐标为原点
+    pos = torch.zeros(1, 3, device=device)
     
     # c. 创建 PyG Data 对象
     fragment = Data(x=atom_type, pos=pos)
-    fragment.is_last = torch.tensor([[False]], device=device) # is_last设置为False
+    fragment.is_new_node = torch.tensor([[False]], device=device) # is_new_node设置为False
     
-    # d. 获得初始环指导信息
-    fragment = get_ring_guidance(p_model, fragment)
+    # 确认子图只有一个原子
+    assert fragment.num_nodes == 1, "子图节点数不为1"
+
+    # 为单原子子图添加 pring_out 属性，形状为 [1, 1]，值为0
+    fragment.pring_out = torch.zeros(
+        (1, 1),  # 固定形状 [1, 1]（单个节点，单个输出维度）
+        dtype=torch.float,  # 与环指导信息的标准类型一致（0/1的float类型）
+        device=fragment.x.device if hasattr(fragment, 'x') else torch.device('cpu')
+    )
 
     # --- 2. 自回归生成循环 ---
     for num_existing_atoms in range(1, args.max_atoms):
@@ -110,8 +123,8 @@ def generate_molecule(
         current_data.x = torch.cat([fragment.x, new_atom_type], dim=0)
         current_data.pos = torch.cat([fragment.pos, new_pos], dim=0)
         current_data.pring_out = torch.cat([fragment.pring_out, new_pring_out], dim=0)
-        current_data.is_last = torch.cat([
-            torch.zeros_like(fragment.is_last), 
+        current_data.is_new_node = torch.cat([
+            torch.zeros_like(fragment.is_new_node), 
             torch.tensor([[True]], device=device)
         ], dim=0)
         
@@ -181,7 +194,7 @@ def generate_molecule(
             
             # 准备模型输入
             # 这里的 t 是 per-graph 的，模型内部会处理
-            target_node_mask = denoising_data.is_last.squeeze().bool()
+            target_node_mask = denoising_data.is_new_node.squeeze().bool()
             target_edge_mask = (target_node_mask[denoising_data.edge_index[0]] | target_node_mask[denoising_data.edge_index[1]])
             edge_index_to_predict = denoising_data.edge_index[:, target_edge_mask]
             
@@ -214,8 +227,20 @@ def generate_molecule(
                 pos_t_minus_1 = pos_mean
 
             # b. 原子类型和边属性采样
-            atom_type_t_minus_1 = sample_discrete_features(pred_logits_a) # 修改
-            bond_attr_t_minus_1 = sample_discrete_features(pred_logits_b)
+            atom_type_t_minus_1 = scheduler.compute_discrete_t_minus_1(
+                x_t=denoising_data.x[target_node_mask],
+                pred_x0_logits=pred_logits_a,
+                t=t_gen,
+                schedule_type='delta',
+                is_atom=True
+            )
+            bond_attr_t_minus_1 = scheduler.compute_discrete_t_minus_1(
+                x_t=denoising_data.edge_attr[target_edge_mask],
+                pred_x0_logits=pred_logits_b,
+                t=t_gen,
+                schedule_type='delta',
+                is_atom=False
+            )
             
             # c. 更新 denoising_data 的目标部分
             denoising_data.pos[target_node_mask] = pos_t_minus_1
@@ -256,13 +281,28 @@ def generate_molecule(
             else:
                 fragment.pos = pos_mean
             
-            fragment.x = sample_discrete_features(pred_logits_a) # 修改
-            fragment.edge_attr = sample_discrete_features(pred_logits_b)
+            fragment.x = scheduler.compute_discrete_t_minus_1(            
+                x_t=fragment.x[target_node_mask],
+                pred_x0_logits=pred_logits_a,
+                t=t_gen,
+                schedule_type='alpha',
+                is_atom=True
+            )
+            fragment.edge_attr = scheduler.compute_discrete_t_minus_1(
+                x_t=fragment.edge_attr[target_edge_mask],
+                pred_x0_logits=pred_logits_b,
+                t=t_gen,
+                schedule_type='alpha',
+                is_atom=False
+            )
             
         # T1 循环结束，我们得到了一个新增了原子并微调过的分子片段
         
         # 更新环指导信息
         fragment = get_ring_guidance(p_model, fragment)
+
+        # 将坐标零中心化
+        fragment.pos = fragment.pos - fragment.pos.mean(dim=0, keepdim=True)
         
         # --- 5. 检查停止条件 ---
         print("步骤 5: 检查停止条件")

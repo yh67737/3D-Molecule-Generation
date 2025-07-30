@@ -153,7 +153,7 @@ def process_gdb9_sdf(sdf_path):
 
 # --- 主程序 ---
 if __name__ == '__main__':
-    sdf_file_path = 'qm9_files/gdb9.sdf' 
+    sdf_file_path = 'qm9_files/gdb9.sdf'
     
     if not os.path.exists(sdf_file_path):
         print(f"错误: 未找到文件 '{sdf_file_path}'。")

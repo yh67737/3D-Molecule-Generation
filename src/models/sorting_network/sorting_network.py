@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 # from torch_geometric.nn import EGNNConv 
-from egnn_conv import EGNNConv 
+from src.models.sorting_network.egnn_new import EquivariantBlock, SinusoidsEmbeddingNew
 from torch_geometric.utils import to_dense_batch
 import math
 
@@ -60,36 +60,184 @@ class PositionalEncoding(nn.Module):
         # PyTorch索引机制将从pe表中取出第0, 1, 2, 0行，组成[4, d_model]的输出张量返回
         return self.pe[t]
 
-class GNN_Core(nn.Module): # 图特征提取
+'''
+# 边特征的融合处理较简单
+class GNN_Core(nn.Module):
     """
-    function：图神经网络，使用EGNN同时处理并融合节点特征、边特征以及3D空间坐标
-
+    新的GNN核心，使用来自 egnn_new.py 的 EquivariantBlock。
+    这个模块同时更新节点特征 h 和坐标 coords。
     """
-    def __init__(self, feature_dim: int, hidden_dim: int, edge_feature_dim: int, num_layers: int = 3):
+    def __init__(self, feature_dim: int, edge_feature_dim: int, num_layers: int = 3, attention: bool = True):
         super(GNN_Core, self).__init__()
-        # 设定超参数
-        self.hidden_dim = hidden_dim
-
-        ## 定义一个ModuleList存储所有EGNN层；ModuleList是PyTorch中用来保存子模块列表的容器，能确保所有层都被正确注册为模型参数
+        
         self.egnn_layers = nn.ModuleList()
-        # 输入层
-        self.egnn_layers.append(
-            EGNNConv(feature_dim, hidden_dim, hidden_dim, edge_attr_nf=edge_feature_dim, attention=True)
-        )
-        # 隐藏层
-        for _ in range(num_layers - 1):
+        for _ in range(num_layers):
+            # EquivariantBlock 内部已经包含了多层GCL用于特征更新，和一层用于坐标更新。
+            # 这里我们将 inv_sublayers (内部GCL层数) 设为 2，n_layers (EquivariantBlock数量) 由外部的 num_layers 控制。
+            # 'edge_feat_nf' 需要包含距离信息(1维)和你自己的边特征。
             self.egnn_layers.append(
-                EGNNConv(hidden_dim, hidden_dim, hidden_dim, edge_attr_nf=edge_feature_dim, attention=True)
+                EquivariantBlock(
+                    hidden_nf=feature_dim, 
+                    edge_feat_nf=1 + edge_feature_dim, # 1维距离 + N维化学键特征
+                    n_layers=2,  # 每个Block内部的GCL层数, 可调
+                    attention=attention,
+                    norm_diff=True,
+                    tanh=False
+                )
             )
 
-    def forward(self, h: torch.Tensor, coords: torch.Tensor, edge_index: torch.Tensor, edge_attr: torch.Tensor) -> torch.Tensor:  
-         ## 循环所有EGNN层，进行多轮消息传递
-        for egnn_conv in self.egnn_layers:
-            h, coords = egnn_conv(h, coords, edge_index, edge_attr=edge_attr)
+    def forward(self, h: torch.Tensor, coords: torch.Tensor, edge_index: torch.Tensor, edge_attr: torch.Tensor) -> torch.Tensor:  # 返回值改回只有 h
+        """
+        前向传播 (优化版)
+        - 利用EGNN的等变消息传递来更新节点特征 h。
+        - 保持输入的真实坐标 coords 不变，仅将其用于计算，不进行更新。
         
-        ## 返回最终的节点特征h，融合了图拓扑、3D几何和化学键信息
-        # 注意：只返回h，因为对于排序任务，主要关心最终的节点表示；更新后的coords在EGNN内部计算中起作用，但不被模块输出
+        Args:
+            h: 节点特征, shape [num_nodes, feature_dim]
+            coords: 节点坐标, shape [num_nodes, 3]
+            edge_index: 边索引, shape [2, num_edges]
+            edge_attr: 你的化学键特征, shape [num_edges, edge_feature_dim]
+        
+        Returns:
+            torch.Tensor: The updated node features h_final.
+        """
+        # 计算距离，用作边特征的一部分
+        radial, _ = coord2diff(coords, edge_index)
+
+        # 准备完整的边特征
+        full_edge_attr = torch.cat([radial, edge_attr], dim=1)
+        
+        # 循环通过所有EquivariantBlock只更新h，忽略返回的coords
+        for egnn_block in self.egnn_layers:
+            # 下一次循环传入的coords仍然是原始的、未经修改的真实坐标
+            h, _ = egnn_block(h, coords, edge_index, edge_attr=full_edge_attr)
+        
+        # 只返回最终的节点特征
         return h
+'''
+
+'''
+class GNN_Core(nn.Module):
+    """
+    GNN核心 (最终优化版)
+    - 使用 SinusoidsEmbeddingNew 对距离进行高维编码。
+    - 使用 MLP 对化学键特征进行高维编码。
+    - 两种编码的维度匹配，执行加性融合。
+    """
+    def __init__(self, feature_dim: int, edge_feature_dim: int, num_layers: int = 3, attention: bool = True):
+        """
+        Args:
+            feature_dim (int): 节点特征的维度。
+            edge_feature_dim (int): 原始边（化学键）特征的维度。
+            num_layers (int): EquivariantBlock 的层数。
+            attention (bool): 是否在EGNN中使用注意力机制。
+        """
+        super(GNN_Core, self).__init__()
+
+        ## 边特征融合模块
+        # 实例化 SinusoidsEmbeddingNew 作为距离编码器
+        self.sin_embedding = SinusoidsEmbeddingNew()
+        # 获取其固定的输出维度
+        edge_embedding_dim = self.sin_embedding.dim # 是EDM根据qm9设定的超参数计算得到的
+
+        # 化学键特征的映射网络 (edge_feature_dim -> edge_embedding_dim)
+        # 它的输出维度必须严格等于距离编码的维度，才能相加
+        self.bond_mlp = nn.Sequential(
+            nn.Linear(edge_feature_dim, edge_embedding_dim),
+            nn.SiLU(),
+            nn.Linear(edge_embedding_dim, edge_embedding_dim)
+        )
+
+        ## 定义等变网络
+        self.egnn_layers = nn.ModuleList()
+        for _ in range(num_layers):
+            self.egnn_layers.append(
+                EquivariantBlock(
+                    hidden_nf=feature_dim, 
+                    # 最终输入到EGNN的边特征维度就是融合后的维度
+                    edge_feat_nf=edge_embedding_dim,
+                    n_layers=2, #可修改
+                    attention=attention,
+                    norm_diff=True,
+                    tanh=False
+                )
+            )
+
+    def forward(self, h: torch.Tensor, coords: torch.Tensor, edge_index: torch.Tensor, edge_attr: torch.Tensor) -> torch.Tensor:
+        # 计算原始距离并通过 SinusoidsEmbeddingNew 编码
+        radial, _ = coord2diff(coords, edge_index)
+        dist_embedding = self.sin_embedding(radial)
+        
+        # 将化学键特征通过 MLP 编码
+        bond_embedding = self.bond_mlp(edge_attr)
+        
+        # 执行加性融合
+        full_edge_attr = dist_embedding + bond_embedding
+        
+        # 循环通过所有 EquivariantBlock
+        for egnn_block in self.egnn_layers:
+            h, _ = egnn_block(h, coords, edge_index, edge_attr=full_edge_attr)
+        
+        return h
+'''
+    
+class GNN_Core(nn.Module):
+    """
+    GNN核心 (最终优化版)
+    - 使用 SinusoidsEmbeddingNew 对距离进行高维编码。
+    - 使用 MLP 对化学键特征进行高维编码。
+    - 两种编码再EGNN内部拼接融合
+    """
+    def __init__(self, feature_dim: int, edge_feature_dim: int, num_layers: int = 3, attention: bool = True):
+        """
+        Args:
+            feature_dim (int): 节点特征的维度。
+            edge_feature_dim (int): 原始边（化学键）特征的维度。
+            num_layers (int): EquivariantBlock 的层数。
+            attention (bool): 是否在EGNN中使用注意力机制。
+        """
+        super(GNN_Core, self).__init__()
+
+        # 实例化SinusoidsEmbeddingNew
+        self.sin_embedding = SinusoidsEmbeddingNew()
+        dist_embedding_dim = self.sin_embedding.dim  # 值为12，是EDM根据qm9设定的超参数计算得到的
+
+        # 定义化学键特征的映射网络
+        bond_embedding_dim = 16 
+        self.bond_mlp = nn.Sequential(
+            nn.Linear(edge_feature_dim, bond_embedding_dim),
+            nn.SiLU(),
+            nn.Linear(bond_embedding_dim, bond_embedding_dim)
+        )
+
+        # 定义等变网络
+        self.egnn_layers = nn.ModuleList()
+        final_edge_feat_dim = dist_embedding_dim + bond_embedding_dim # 12 + 16 = 28
+
+        for _ in range(num_layers):
+            self.egnn_layers.append(
+                EquivariantBlock(
+                    hidden_nf=feature_dim, 
+                    edge_feat_nf=final_edge_feat_dim,
+                    n_layers=2,
+                    attention=attention,
+                    norm_diff=True,
+                    tanh=False,
+                    sin_embedding=self.sin_embedding 
+                )
+            )
+
+    def forward(self, h: torch.Tensor, coords: torch.Tensor, edge_index: torch.Tensor, edge_attr: torch.Tensor) -> torch.Tensor:
+        
+        # 将化学键特征通过MLP编码
+        bond_embedding = self.bond_mlp(edge_attr)
+        
+        # 循环通过所有 EquivariantBlock
+        for egnn_block in self.egnn_layers:
+            h, _ = egnn_block(h, coords, edge_index, edge_attr=bond_embedding)
+        
+        return h
+
 
 # SortingNetwork主模型
 class SortingNetwork(nn.Module):
@@ -116,7 +264,6 @@ class SortingNetwork(nn.Module):
         # 图网络模块：实例化基于EGNN的图特征提取器，处理并融合节点、边、3D坐标三类信息 
         self.gnn_core = GNN_Core(
             feature_dim=hidden_dim,
-            hidden_dim=hidden_dim, 
             edge_feature_dim=num_bond_features, 
             num_layers=gnn_layers
         )

@@ -5,9 +5,9 @@ from torch_scatter import scatter
 
 from e3nn import o3
 
-from radial_func import RadialProfile
-from tensor_product_rescale import LinearRS, FullyConnectedTensorProductRescale, TensorProductRescale, sort_irreps_even_first
-from tensor_product_rescale import DepthwiseTensorProduct
+from .radial_func import RadialProfile
+from .tensor_product_rescale import LinearRS, FullyConnectedTensorProductRescale, TensorProductRescale, sort_irreps_even_first
+from .tensor_product_rescale import DepthwiseTensorProduct
 _RESCALE = True
 _USE_BIAS = True
 
@@ -24,52 +24,39 @@ class GaussianRadialBasisLayer(torch.nn.Module):
     def __init__(self, num_basis, cutoff):
         super().__init__()
         self.num_basis = num_basis
-        self.cutoff = cutoff + 0.0 # 确保是浮点数
+        self.cutoff = cutoff + 0.0  # 确保是浮点数
 
-        ## 定义可学习参数
-        # 高斯函数的中心点(均值)和宽度(标准差)，初始化为随机值，让网络自己学习
         self.mean = torch.nn.Parameter(torch.zeros(1, self.num_basis))
         self.std = torch.nn.Parameter(torch.zeros(1, self.num_basis))
-        
-        # 对归一化后的距离进行一次线性变换的权重和偏置，增加模型灵活性
+
         self.weight = torch.nn.Parameter(torch.ones(1, 1))
         self.bias = torch.nn.Parameter(torch.zeros(1, 1))
-        
-        ## 参数初始化
-        # 定义随机初始化的范围
+
         self.std_init_max = 1.0
         self.std_init_min = 1.0 / self.num_basis
         self.mean_init_max = 1.0
         self.mean_init_min = 0
 
-        # 使用均匀分布来初始化mean和std
         torch.nn.init.uniform_(self.mean, self.mean_init_min, self.mean_init_max)
         torch.nn.init.uniform_(self.std, self.std_init_min, self.std_init_max)
-        # weight和bias初始化为恒等变换
         torch.nn.init.constant_(self.weight, 1)
         torch.nn.init.constant_(self.bias, 0)
 
-
-    def forward(self, dist, node_atom=None, edge_src=None, edge_dst=None):
-        # 将输入的物理距离进行归一化，变换到[0, 1]之间
+    def forward(self, dist):
         x = dist / self.cutoff
-        # 增加一个维度以进行广播，shape：[num_edges] -> [num_edges, 1]
         x = x.unsqueeze(-1)
-        # 对归一化后的距离进行一次可学习的线性变换
         x = self.weight * x + self.bias
-        # 变换后的距离复制num_basis份，为每个高斯基函数计算做准备
-        x = x.expand(-1, self.num_basis) # shape：[num_edges, 1] -> [num_edges, num_basis]
-        
-        # 获取中心点和宽度(可学习参数）
+        x = x.expand(-1, self.num_basis)
+
         mean = self.mean
-        # 保证宽度(标准差)永远是正数，并加上一个极小值防止除零-->参数更新过程中std的取值不能保证
         std = self.std.abs() + 1e-5
-        
-        # 计算最终的径向基特征
-        # 输出形状为 [num_edges, num_basis]
+
         x = gaussian(x, mean, std)
         return x
-       
+
+    def extra_repr(self):
+        return 'mean_init_max={}, mean_init_min={}, std_init_max={}, std_init_min={}'.format(
+            self.mean_init_max, self.mean_init_min, self.std_init_max, self.std_init_min)
 
     def extra_repr(self):
         # 辅助函数，用于打印模块信息
@@ -146,74 +133,40 @@ class NodeEmbeddingNetwork(nn.Module):
 # 定义化学键类型数量
 _DEFAULT_NUM_BOND_TYPES = 5 # 无键、单键、双键、三键、芳香键
 
+
 class EdgeEmbeddingNetwork(nn.Module):
-    """
-    根据节点坐标和化学键类型信息，构建并融合边的初始特征，
-    最终为每条边生成一个单一完整的Irreps特征表示.
-    """
-    def __init__(self, 
+    def __init__(self,
                  irreps_sh: str = '1x0e+1x1o+1x2e',
-                 max_radius: float = 5.0, ###
+                 max_radius: float = 5.0,
                  number_of_basis: int = 128,
                  num_bond_types: int = _DEFAULT_NUM_BOND_TYPES,
                  bond_embedding_dim: int = 32,
                  irreps_out_fused: str = '128x0e+64x1o+32x2e'):
-        """
-        Args:
-            irreps_sh (str): 球谐函数输出的irreps类型，确定边的几何特征的阶数.
-            number_of_basis (int): 径向基函数（距离嵌入）的维度.
-            num_bond_types (int): 化学键类型数量.
-            bond_embedding_dim (int): 化学键嵌入特征的维度.
-            irreps_out_fused (str): 最终融合后的边特征的Irreps类型.
-        """
         super().__init__()
         self.max_radius = max_radius
         self.irreps_sh = o3.Irreps(irreps_sh)
-        self.irreps_out_fused = o3.Irreps(irreps_out_fused,)
-        
-        # 距离特征嵌入 (RBF层)
-        self.rbf = GaussianRadialBasisLayer(number_of_basis, cutoff=self.max_radius)
+        self.irreps_out_fused = o3.Irreps(irreps_out_fused, )
 
-        # 化学键类型嵌入
+        self.rbf = GaussianRadialBasisLayer(number_of_basis, cutoff=self.max_radius)
         self.bond_embedding = nn.Linear(num_bond_types, bond_embedding_dim, bias=False)
 
-        # 特征融合层 (Tensor Product) 
-        # 确定融合时标量部分的Irreps维度: RBF维度 + 化学键嵌入维度
         scalar_dim_combined = number_of_basis + bond_embedding_dim
         irreps_scalar_combined = o3.Irreps(f'{scalar_dim_combined}x0e')
-        
-        # 定义张量积层，用于融合几何特征(irreps_sh)和组合后的标量特征
+
         self.fusion_tp = FullyConnectedTensorProductRescale(
-            irreps_in1=self.irreps_sh, 
-            irreps_in2=irreps_scalar_combined, 
+            irreps_in1=self.irreps_sh,
+            irreps_in2=irreps_scalar_combined,
             irreps_out=self.irreps_out_fused
         )
 
-    def forward(self, 
-              pos: torch.Tensor, 
-              bond_type_onehot: torch.Tensor,
-              edge_index: torch.Tensor) -> dict:
-        """
-        Args:
-            pos (Tensor): 节点坐标, shape-> [num_nodes, 3].
-            bond_type_onehot (Tensor): one-hot编码的化学键类型, shape-> [num_edges, num_bond_types].
-            edge_index (Tensor): 边索引，shape-> [2, num_edges]
-
-        Returns:
-            dict: 包含融合后边特征以及其他辅助信息的字典
-                  'fused_edge_feature': 融合后的Irreps特征
-                  'edge_src': 源节点索引
-                  'edge_dst': 目标节点索引
-                  'edge_vec': 边方向向量 (pos_src - pos_dst)
-        """
+    def forward(self,
+                pos: torch.Tensor,
+                bond_type_onehot: torch.Tensor,
+                edge_index: torch.Tensor) -> dict:
         edge_src, edge_dst = edge_index[0], edge_index[1]
-        
-        ## 生成基础零散的边特征
-        
-        # 计算相对位置向量 r_ij (方向为 src -> dst)
+
         edge_vec = pos.index_select(0, edge_src) - pos.index_select(0, edge_dst)
-        
-        # 几何方向特征：球谐函数
+
         edge_attr = o3.spherical_harmonics(
             l=self.irreps_sh,
             x=edge_vec,
@@ -221,26 +174,19 @@ class EdgeEmbeddingNetwork(nn.Module):
             normalization='component'
         )
 
-        # 标量距离特征：径向基函数
         edge_length = edge_vec.norm(dim=1)
         edge_rbf = self.rbf(edge_length)
 
-        # 标量化学键类型特征
         bond_embeds = self.bond_embedding(bond_type_onehot.float())
 
-        ## 融合基础特征
-
-        # 拼接所有标量特征
         edge_scalars_combined = torch.cat([edge_rbf, bond_embeds], dim=-1)
 
-        # 使用张量积将几何特征(edge_attr)与组合后的标量特征(edge_scalars_combined)融合
         fused_edge_feature = self.fusion_tp(edge_attr, edge_scalars_combined)
-        
-        # 返回单一、完整的边特征，以及其他辅助信息
+
         return {
-            "fused_edge_feature": fused_edge_feature, 
-            "edge_attr_base": edge_attr,             
-            "edge_scalars_base": edge_rbf,           
+            "fused_edge_feature": fused_edge_feature,
+            "edge_attr_base": edge_attr,
+            "edge_scalars_base": edge_rbf,
             "edge_src": edge_src,
             "edge_dst": edge_dst,
             "edge_vec": edge_vec
@@ -361,7 +307,6 @@ class InputEmbeddingLayer(nn.Module):
         initial_node_embedding = self.node_embedding_net(
             atom_type_onehot=data.x,
             ring_info=data.pring_out
-            # 不再传入 data.is_last
         )
 
         # 为节点注入几何信息

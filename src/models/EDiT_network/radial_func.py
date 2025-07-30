@@ -2,8 +2,6 @@ import torch
 import torch.nn as nn
 from torch.nn import init
 import math
-from e3nn import o3
-from fast_activation import Activation
    
 
 class RadialProfile(nn.Module):

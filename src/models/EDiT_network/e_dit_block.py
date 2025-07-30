@@ -3,15 +3,14 @@ import torch
 from e3nn import o3
 from e3nn.util.jit import compile_mode
 import torch.nn as nn
-from mul_head_graph_attention import get_norm_layer, GraphAttention,FeedForwardNetwork
-from tensor_product_rescale import FullyConnectedTensorProductRescale
-from drop import GraphDropPath
-from edge_update import EdgeUpdateNetwork
-from e3nn.o3 import Irreps
+from .mul_head_graph_attention import get_norm_layer, GraphAttention,FeedForwardNetwork
+from .tensor_product_rescale import FullyConnectedTensorProductRescale
+from .drop import GraphDropPath
+from .edge_update import EdgeUpdateNetwork
 
 _RESCALE = True
 
-@compile_mode('script')
+# @compile_mode('script')
 class E_DiT_Block(torch.nn.Module):
     '''
         一个同时更新节点和边特征的等变Transformer块 (Equivariant Denoising Transformer Block)。
@@ -102,9 +101,10 @@ class E_DiT_Block(torch.nn.Module):
         
         # 边更新网络
         self.edge_updater = EdgeUpdateNetwork(
-            irreps_node=self.irreps_node_input,  # 使用节点的输入Irreps作为上下文
-            irreps_edge=self.irreps_edge_input,  # 使用边的输入Irreps
-            hidden_dim=edge_update_hidden_dim  # 传入MLP隐藏层维度
+            irreps_node=self.irreps_node_input,
+            irreps_edge=self.irreps_edge_input,
+            hidden_dim=edge_update_hidden_dim,
+            time_embedding_dim=time_embedding_dim
         )
 
         # 边的前馈网络 (与节点的FFN是独立的实例，拥有不同权重)
@@ -118,6 +118,11 @@ class E_DiT_Block(torch.nn.Module):
 
         # 共享路径失活模块：该模块模块无参数、无状态，创建一次和两个效果一样
         self.drop_path = GraphDropPath(drop_path_rate) if drop_path_rate > 0. else None
+        self.edge_updater_gate = torch.nn.Parameter(torch.tensor([0.0]))
+        self.edge_ffn_gate = torch.nn.Parameter(torch.tensor([0.0]))
+
+        self.node_ga_gate = torch.nn.Parameter(torch.tensor([0.0]))
+        self.node_ffn_gate = torch.nn.Parameter(torch.tensor([0.0]))
 
     def forward(self, node_input, node_attr, edge_src, edge_dst, edge_attr, edge_scalars,
                 edge_input, edge_attr_type, edge_index, t, batch, **kwargs):
@@ -137,7 +142,6 @@ class E_DiT_Block(torch.nn.Module):
         Returns:
             (torch.Tensor, torch.Tensor): 更新后的节点特征和边特征。
         """
-        
         ## 节点更新路径 (Node Update Path) 
         node_output = node_input
         node_features = node_input
@@ -152,6 +156,8 @@ class E_DiT_Block(torch.nn.Module):
             edge_src=edge_src, edge_dst=edge_dst, 
             edge_attr=edge_attr, edge_scalars=edge_scalars,
             batch=batch)
+
+        node_features = node_features * self.node_ga_gate
         
         if self.drop_path is not None:
             node_features = self.drop_path(node_features, batch)
@@ -165,6 +171,9 @@ class E_DiT_Block(torch.nn.Module):
 
         # Feed-Forward Network        
         node_features = self.node_ffn(node_features, node_attr)
+
+        node_features = node_features * self.node_ffn_gate
+
         if self.ffn_shortcut is not None:
             node_output = self.ffn_shortcut(node_output, node_attr)
         if self.drop_path is not None:
@@ -181,29 +190,37 @@ class E_DiT_Block(torch.nn.Module):
         # --- 第一个残差分支 (Edge Update) ---
         # Pre-Normalization
         norm_edge_features = self.edge_norm_1(edge_features, t, edge_batch)
+        # print('before updater:',norm_edge_features)
 
         # 使用完全更新后的节点特征node_output作为上下文信息
         edge_update_amount = self.edge_updater(
             h=node_output,
             e_in=norm_edge_features,
-            edge_index=edge_index
+            edge_index=edge_index,
+            t=t,
+            edge_batch=edge_batch
         )
+        edge_update_amount = edge_update_amount * self.edge_updater_gate
 
         if self.drop_path is not None:
             edge_update_amount = self.drop_path(edge_update_amount, edge_batch)
         # 第一次残差连接
         edge_output = edge_output + edge_update_amount
+        # print(f"after updater:",edge_output)
 
         # --- 第二个残差分支 (FFN) ---
         edge_features = edge_output
         # Pre-Normalization
         norm_edge_features = self.edge_norm_2(edge_features, t, edge_batch)
         # Feed-Forward Network
+        # print(f"before ffn:", norm_edge_features)
         ffn_output = self.edge_ffn(norm_edge_features, edge_attr_type)
+
+        ffn_output = ffn_output * self.edge_ffn_gate
 
         if self.drop_path is not None:
             ffn_output = self.drop_path(ffn_output, edge_batch)
         # 第二次残差连接
         edge_output = edge_output + ffn_output
-        
+        # print(f"after ffn:", edge_output)
         return node_output, edge_output

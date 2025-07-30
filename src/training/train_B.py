@@ -1,17 +1,12 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch_geometric.data import Batch
 from tqdm import tqdm
-import numpy as np
 import torch.nn.functional as F
-# from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.optim.lr_scheduler import CosineAnnealingLR  # 导入 CosineAnnealingLR
 import os
 
-# 假设您的模型和调度器已经定义好
-# from e_dit_network import E_DiT_Network
-from scheduler import HierarchicalDiffusionScheduler
+
 
 # ==============================================================================
 # 1. 辅助函数 (Helper Functions)
@@ -101,9 +96,7 @@ def noise_discrete_features(
 def calculate_atom_type_loss(
     pred_logits: torch.Tensor,   # 模型对 x0 的预测 logits, shape [M, C]
     true_x0_indices: torch.Tensor, # 真实的 x0 类别索引, shape [M]
-    t: torch.Tensor,               # 时间步, shape [M]
     lambda_aux: float = 0.001,     # D3PM论文建议的小值
-    T: int = 1000                  # 总时间步长，用于权重
 ) -> torch.Tensor:
     """
     计算基于 D3PM 混合损失 L_λ 的简化版原子类型损失。
@@ -190,9 +183,7 @@ def calculate_coordinate_loss_wrapper(
 def calculate_bond_type_loss(
     pred_logits: torch.Tensor,      # 模型对干净边类型的预测 logits, shape [M_edges, C_bonds]
     true_b0_indices: torch.Tensor, # 真实的干净边类型索引, shape [M_edges]
-    t: torch.Tensor,               # 每个边对应的时间步, shape [M_edges]
     lambda_aux: float = 0.001,     # 辅助损失的权重
-    T: int = 1000                  # 总时间步长 (可选，用于更复杂的加权)
 ) -> torch.Tensor:
     """
     计算基于 D3PM 混合损失 L_λ 的简化版边类型损失。
@@ -260,9 +251,9 @@ def validate(val_loader, model, scheduler, args, amp_autocast):
             noised_data_I = clean_batch.clone(); noised_data_I.pos, noised_data_I.x, noised_data_I.edge_attr = noised_pos_I, noised_x_I, noised_edge_attr_I
             
             target_node_mask_I = torch.ones(num_nodes, dtype=torch.bool, device=device)
-            edge_index_to_predict_I = clean_batch.edge_index
+            target_edge_mask_I = torch.ones(num_edges, dtype=torch.bool, device=device)
             
-            predictions_I = model(noised_data_I, t1, target_node_mask_I, edge_index_to_predict_I)
+            predictions_I = model(noised_data_I, t1, target_node_mask_I, target_edge_mask_I)
             
             lossI_a = calculate_atom_type_loss(predictions_I['atom_type_logits'], clean_batch.x.argmax(dim=-1), t1_per_node, args.lambda_aux, scheduler.T_full)
             lossI_r = calculate_coordinate_loss_wrapper(predictions_I['predicted_r0'], noise1, noised_pos_I, t1_per_node, scheduler, 'alpha')
@@ -270,7 +261,7 @@ def validate(val_loader, model, scheduler, args, amp_autocast):
             loss_I = args.w_a * lossI_a + args.w_r * lossI_r + args.w_b * lossI_b
     
             # --- 策略 II: 局部生成 ---
-            target_node_mask_II = clean_batch.is_last.squeeze().bool()
+            target_node_mask_II = clean_batch.is_new_node.squeeze().bool()
             context_node_mask_II = ~target_node_mask_II
             target_edge_mask = (target_node_mask_II[clean_batch.edge_index[0]] | target_node_mask_II[clean_batch.edge_index[1]])
             context_edge_mask = ~target_edge_mask
@@ -292,9 +283,7 @@ def validate(val_loader, model, scheduler, args, amp_autocast):
         
             noised_data_II = clean_batch.clone(); noised_data_II.pos, noised_data_II.x, noised_data_II.edge_attr = noised_pos_II, noised_x_II, noised_edge_attr_II
         
-            edge_index_to_predict_II = clean_batch.edge_index[:, target_edge_mask]
-        
-            predictions_II = model(noised_data_II, t2, target_node_mask_II, edge_index_to_predict_II)
+            predictions_II = model(noised_data_II, t2, target_node_mask_II, target_edge_mask)
 
             lossII_a = calculate_atom_type_loss(predictions_II['atom_type_logits'], clean_batch.x[target_node_mask_II].argmax(dim=-1), t2_per_node[target_node_mask_II], args.lambda_aux, scheduler.T_full)
             lossII_r = calculate_coordinate_loss_wrapper(predictions_II['predicted_r0'], noise2[target_node_mask_II], noised_pos_target, t2_per_node[target_node_mask_II], scheduler, 'delta')
@@ -333,20 +322,14 @@ def train(
     # 创建优化器
     optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
 
-    # scheduler_model = ReduceLROnPlateau(
-    #     optimizer, mode='min', factor=0.5, patience=2, verbose=True
-    # )
-    # 创建 CosineAnnealingLR 调度器
     T_max = args.epochs  # 最大迭代次数，通常设置为总 epoch 数
-    lr_min_factor = 0.01
+    lr_min_factor = args.lr_min_factor
     scheduler_model = CosineAnnealingLR(optimizer, T_max=T_max, eta_min=lr_min_factor * args.learning_rate)
 
     best_val_loss = float('inf')
     best_epoch = 0
-    checkpoint_dir = os.path.join(args.output_dir, "checkpoints")
-    os.makedirs(checkpoint_dir, exist_ok=True)
     
-    logger.info(f"模型检查点将保存在: {checkpoint_dir}")
+    logger.info(f"模型检查点将保存在: {args.checkpoints_dir}")
     logger.info("开始训练...")
 
     for epoch in range(1, args.epochs + 1):
@@ -361,7 +344,7 @@ def train(
         total_loss_epoch = 0.0
         
         # 使用 tqdm 创建进度条
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs}")  # desc=...: 设置进度条左侧的描述性文字，例如 Epoch 1/100
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs}")  # desc=...: 设置进度条左侧的描述性文字，例如 Epoch 1/100
         
         for clean_batch in pbar:
             clean_batch = clean_batch.to(device) # 将当前批次的数据（包括所有张量，如 pos, x, edge_index 等）一次性地移动到之前定义好的目标设备 device 上
@@ -417,16 +400,15 @@ def train(
                 # 创建一个长度为当前批次中所有原子的总数，内容全为 True 的向量。
                 target_node_mask_I = torch.ones(num_nodes, dtype=torch.bool, device=device)
                 # 处理并输出所有边的预测结果
-                edge_index_to_predict_I = clean_batch.edge_index
-            
+                target_edge_mask_I = torch.ones(num_edges, dtype=torch.bool, device=device)
+
                 # f. 模型前向传播
-                predictions_I = model(noised_data_I, t1, target_node_mask_I, edge_index_to_predict_I)
+                predictions_I = model(noised_data_I, t1, target_node_mask_I, target_edge_mask_I)
             
                 # g. 计算损失 Ⅰ
                 lossI_a = calculate_atom_type_loss(
                     predictions_I['atom_type_logits'],
                     clean_batch.x.argmax(dim=-1),  # 从 One-Hot 编码的特征张量中，提取出每个项目对应的类别索引 (class index)
-                    t1_per_node,
                     args.lambda_aux
                 )
                 lossI_r = calculate_coordinate_loss_wrapper(
@@ -439,8 +421,7 @@ def train(
                 )
                 lossI_b = calculate_bond_type_loss(
                     pred_logits=predictions_I['bond_logits'], 
-                    true_b0_indices=clean_batch.edge_attr.argmax(dim=-1), 
-                    t=t1_per_edge,
+                    true_b0_indices=clean_batch.edge_attr.argmax(dim=-1),
                     lambda_aux=args.lambda_aux
                 )
                 loss_I = args.w_a * lossI_a + args.w_r * lossI_r + args.w_b * lossI_b
@@ -450,7 +431,8 @@ def train(
 
                 # a. 识别上下文和目标
                 # 标识哪些节点是我们的预测目标
-                target_node_mask_II = clean_batch.is_last.squeeze() # is_last 就是我们的目标mask，维度压缩为[num_nodes]
+                target_node_mask_II = clean_batch.is_new_node.squeeze() # is_new_node 就是我们的目标mask，维度压缩为[num_nodes]
+                target_node_mask_II = target_node_mask_II.to(torch.bool)
                 # 标识哪些节点是上下文节点，用于对上下文节点加噪
                 context_node_mask_II = ~target_node_mask_II
                 # 标识哪些边是与预测目标节点相关的边
@@ -498,20 +480,16 @@ def train(
                 noised_data_II.pos = noised_pos_II
                 noised_data_II.x = noised_x_II
                 noised_data_II.edge_attr = noised_edge_attr_II
-            
-                # e. 准备模型输入
-                # target_node_mask_II 已经定义好了
-                edge_index_to_predict_II = clean_batch.edge_index[:, target_edge_mask]
+
             
                 # f. 模型前向传播 (注意时间步传入的是 t2)
-                predictions_II = model(noised_data_II, t2, target_node_mask_II, edge_index_to_predict_II)
+                predictions_II = model(noised_data_II, t2, target_node_mask_II, target_edge_mask)
 
                 # g. 计算损失 Ⅱ
                 # 注意：这里的真实标签和噪声都需要根据 mask 进行筛选
                 lossII_a = calculate_atom_type_loss(
                     predictions_II['atom_type_logits'],
                     clean_batch.x[target_node_mask_II].argmax(dim=-1),
-                    t2_per_node[target_node_mask_II],
                     args.lambda_aux
                 )
                 lossII_r = calculate_coordinate_loss_wrapper(
@@ -525,7 +503,6 @@ def train(
                 lossII_b = calculate_bond_type_loss(
                     pred_logits=predictions_II['bond_logits'],
                     true_b0_indices=clean_batch.edge_attr[target_edge_mask].argmax(dim=-1),
-                    t=t2_per_edge[target_edge_mask],
                     lambda_aux=args.lambda_aux
                 )
                 loss_II = args.w_a * lossII_a + args.w_r * lossII_r + args.w_b * lossII_b
@@ -535,14 +512,11 @@ def train(
                 total_loss = scheduler.T1 * loss_I + scheduler.T2 * loss_II
 
             # 缩放生成模型的损失并计算梯度
-            # retain_graph=True 是因为 s_model 的损失计算也依赖于这个图
-            loss_scaler.scale(total_loss).backward()
-
-            # loss_scaler.step 会自动 unscale 梯度，然后调用优化器的 step
-            loss_scaler.step(optimizer)
-
-            # 更新 scaler 的缩放因子
-            loss_scaler.update()
+            loss_scaler(
+                loss=total_loss,
+                optimizer=optimizer,
+                parameters=model.parameters()
+            )
             
             total_loss_epoch += total_loss.item()
             pbar.set_postfix({'loss': total_loss.item()})
@@ -552,13 +526,9 @@ def train(
 
 
         # --- 验证阶段 ---
-        if epoch >= 10 and (epoch % 5 == 0):
+        if epoch >= args.val_thre and (epoch % args.val_log_freq == 0):
             avg_val_loss = validate(val_loader, model, scheduler, args, amp_autocast)
             logger.info(f"Epoch {epoch} [Validation] 完成, 平均损失: {avg_val_loss:.4f}")
-
-            # --- 使用验证损失来更新学习率 ---
-            # scheduler.step() 会监控 avg_val_loss，并根据内部的 patience 计数决定是否降低 LR
-            # scheduler_model.step(avg_val_loss)
 
             # 保存周期性检查点 
             logger.info(f"在 Epoch {epoch} 保存周期性检查点及其验证损失...")
@@ -573,7 +543,7 @@ def train(
                 'args': args
             }
             # 使用包含 epoch 编号的唯一文件名
-            checkpoint_path = os.path.join(checkpoint_dir, f'checkpoint_epoch_{epoch}.pth')
+            checkpoint_path = os.path.join(args.checkpoints_dir, f'checkpoint_epoch_{epoch}.pth')
             torch.save(checkpoint_state, checkpoint_path)
 
             # 检查并保存最佳模型
@@ -590,7 +560,7 @@ def train(
                     'args': args
                 }
                 
-                best_model_path = os.path.join(checkpoint_dir, 'best_model.pth')
+                best_model_path = os.path.join(args.checkpoints_dir, 'best_model.pth')
                 torch.save(best_model_state, best_model_path)
         # 更新学习率调度器
         scheduler_model.step()

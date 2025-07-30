@@ -5,12 +5,11 @@ import torch_geometric
 from e3nn import o3
 from e3nn.util.jit import compile_mode
 
-from layer_norm import AdaEquiLayerNorm
-from radial_func import RadialProfile
-from fast_activation import Activation, Gate
-from drop import EquivariantDropout
-from tensor_product_rescale import FullyConnectedTensorProductRescaleSwishGate, LinearRS, FullyConnectedTensorProductRescale, TensorProductRescale, irreps2gate, sort_irreps_even_first
-from tensor_product_rescale import DepthwiseTensorProduct
+from .layer_norm import AdaEquiLayerNorm
+from .fast_activation import Activation, Gate
+from .drop import EquivariantDropout
+from .tensor_product_rescale import FullyConnectedTensorProductRescaleSwishGate, LinearRS, FullyConnectedTensorProductRescale, TensorProductRescale, irreps2gate, sort_irreps_even_first
+from .tensor_product_rescale import DepthwiseTensorProduct
 _RESCALE = True
 
 
@@ -444,6 +443,7 @@ class GraphAttention(torch.nn.Module):
         if proj_drop != 0.0:
             self.proj_drop = EquivariantDropout(self.irreps_node_input, 
                 drop_prob=proj_drop)
+
         
         
     def forward(self, node_input, node_attr, edge_src, edge_dst, edge_attr, edge_scalars, 

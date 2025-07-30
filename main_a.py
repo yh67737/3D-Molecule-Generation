@@ -11,14 +11,14 @@ from contextlib import suppress
 import torch.cuda.amp
 import torch_geometric.utils
 from torch_geometric.loader import DataLoader
-
+from src.utils import logger
 from src.utils import utils
 from src.utils.logger import FileLogger # Equiformer提供的通用模块
 from timm.utils import NativeScaler # timm是一个强大的深度学习第三方库，需要安装
 # distributed training
 from src.models.sorting_network.sorting_network import SortingNetwork
 from src.models.EDiT_network.e_dit_network import E_DiT_Network
-from src.data.preprocess_generate import generate_single_centered_subgraph
+from src.data.preprocess_bfs import generate_single_centered_subgraph
 from src.training.train_A import train
 from src.training.scheduler import HierarchicalDiffusionScheduler
 
@@ -51,7 +51,7 @@ class PairedMoleculeDataset(Dataset):
         if self._dataset1 is None:
             if self.logger:
                 self.logger.info(f"First access: Lazily loading dataset 1 from: {self.data_path_1}")
-            self._dataset1 = torch.load(self.data_path_1)
+            self._dataset1 = torch.load(self.data_path_1, weights_only=False)
         return self._dataset1
 
     @property
@@ -60,7 +60,7 @@ class PairedMoleculeDataset(Dataset):
         if self._dataset2 is None:
             if self.logger:
                 self.logger.info(f"First access: Lazily loading dataset 2 from: {self.data_path_2}")
-            self._dataset2 = torch.load(self.data_path_2)
+            self._dataset2 = torch.load(self.data_path_2, weights_only=False)
         return self._dataset2
 
     def __len__(self):
@@ -134,7 +134,7 @@ def compute_dataset_stats(data_loader, logger, print_freq=100):
 def compute_dataset_stats(
     data_loader, 
     sorting_network, 
-    fragmenter, 
+    subgraph_generator_fn,
     device, 
     logger,
     num_samples_per_graph=1 # 为减少计算量，每个图只采样一个片段进行统计
@@ -169,8 +169,8 @@ def compute_dataset_stats(
             order = local_orders[i]
             
             # 3. 使用切割模块生成一个分子片段
-            # 注意：这里的 order 是局部索引，可以直接用于切割对应的 graph2
-            fragment = fragmenter.cut(graph2, order)
+            # 注意：这里的order是局部索引，可以直接用于切割对应的 graph2
+            fragment = subgraph_generator_fn(graph2, order)
             
             # 4. 在生成的片段上计算统计量
             num_nodes = fragment.num_nodes
@@ -203,6 +203,7 @@ def get_args_parser():
 
     # --- 通用设置 ---
     parser.add_argument('--output_dir', type=str, default='./output', help='Path to save logs, checkpoints, and generated molecules.')
+    parser.add_argument('--args_save_dir', type=str, default='./saved_args', help='Directory to save the configuration object of each run.') 
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility.')
     parser.add_argument('--device', type=str, default='cuda', choices=['cuda', 'cpu'], help='Device to use for training.')
     parser.add_argument('--val_log_freq', type=int, default=5)
@@ -210,8 +211,8 @@ def get_args_parser():
 
     # 训练流程
     parser.add_argument('--epochs', type=int, default=500, help='Total number of training epochs')
-    parser.add_argument('--learning_rate', type=float, default=1e-3, help='Learning rate for the Adam optimizer(model)')
-    parser.add_argument('--s_learning_rate', type=float, default=1e-3, help='Learning rate for the Adam optimizer(s_model)')
+    parser.add_argument('--learning_rate', type=float, default=1e-4, help='Learning rate for the Adam optimizer(model)')
+    parser.add_argument('--s_learning_rate', type=float, default=1e-4, help='Learning rate for the Adam optimizer(s_model)')
     parser.add_argument('--lr_min_factor', type=float, default=0.01, 
                     help="学习率下限因子，最终学习率 = lr_min_factor × 初始学习率")
     # 损失权重
@@ -235,13 +236,15 @@ def get_args_parser():
     # 生成参数
     parser.add_argument('--max_atoms', type=int, default=50, help="生成分子的最大原子数。这是主生成循环的上限。")
     parser.add_argument('--min_atoms', type=int, default=3, help="在因新原子未连接而停止生成之前，所要求的最小原子数。")
+    parser.add_argument('--num_generate', type=int, default=100, help='要生成的分子数量')
+    parser.add_argument('--model_ckpt', type=str, default='./output/model.pt', help='生成模型路径') # 修改
     
     # --- 数据集参数 ---
-    parser.add_argument('--data_path_1', type=str, default='./prepared_data/gdb9_pyg_dataset_with_absorbing_state.pt', help='Path to dataset 1 (for SortingNetwork).')
-    parser.add_argument('--data_path_2', type=str, default='./prepared_data/gdb9_pyg_dataset_fully_connected.pt', help='Path to dataset 2 (for E-DiT).')
+    parser.add_argument('--data_path_1', type=str, default='./prepared_data/small.pt', help='Path to dataset 1 (for SortingNetwork).')
+    parser.add_argument('--data_path_2', type=str, default='./prepared_data/small_fully_connected.pt', help='Path to dataset 2 (for E-DiT).')
     parser.add_argument('--data_split_path', type=str, default='./data_splits', help='Directory to save/load data split indices.')
     parser.add_argument('--val_split_percentage', type=float, default=0.05, help='Percentage of data to use for validation.')
-    parser.add_argument('--train_batch_size', type=int, default=256)
+    parser.add_argument('--train_batch_size', type=int, default=8)
     parser.add_argument('--val_batch_size', type=int, default=256)
     parser.add_argument('--num_workers', type=int, default=4)
 
@@ -325,7 +328,7 @@ def get_args_parser():
     # AMP
     parser.add_argument('--amp', action='store_true', help='Enable automatic mixed precision training.')
     parser.add_argument('--no-amp', action='store_false', dest='amp')
-    parser.set_defaults(amp=True)
+    parser.set_defaults(amp=False)
 
     # 数据统计计算
     parser.add_argument('--compute_stats', action='store_true',
@@ -369,6 +372,18 @@ def main(args):
         # 循环创建所有文件夹
         for path in sub_dirs.values():
             Path(path).mkdir(parents=True, exist_ok=True)
+
+        # 保存配置(args)对象
+        # 从 run_dir中提取时间戳，确保文件名与本次运行完全对应
+        timestamp_from_path = os.path.basename(args.run_dir)
+        
+        # 构建保存文件的完整路径
+        args_save_filename = f"args_{timestamp_from_path}.pt"
+        args_save_path = os.path.join(args.args_save_dir, args_save_filename)
+        
+        # 保存args对象
+        torch.save(args, args_save_path)
+        print(f"Configuration for this run has been saved to: {args_save_path}")
         
         # 准备要广播的对象列表:如果不做处理，只有主进程的args对象增加了新创建的路径，其他进程的args对象则没有，后续调用时就会出错
         # 包含动态生成的run_dir所有子目录路径字典
@@ -407,6 +422,7 @@ def main(args):
     logger.info("Logger initialized. Distributed config synchronized.")
     logger.info(f"All outputs for this run will be saved to: {args.run_dir}")
     logger.info(f"Master process (rank 0) configuration:\n{args}") # 只记录主进程的配置作为代表
+    logger.info(f"args_save_path:{args_save_path}")
     # 如果想确认每个进程都已启动，可以像下面这样写，但通常没必要
     # logger.info(f"Process {args.rank} has started.") # 这条日志只会在 rank 0 的控制台和文件中出现
     
@@ -440,7 +456,7 @@ def main(args):
             # 这是当前“先划分再加载”策略下不可避免的开销。
             # 如果数据集过大无法一次性载入内存，就需要改变数据存储方式
             # (例如，每个样本一个文件，然后统计文件数量)。
-            num_molecules = len(torch.load(args.data_path_1))
+            num_molecules = len(torch.load(args.data_path_1, weights_only=False))
             logger.info(f"Total number of molecules: {num_molecules}")
 
             indices = list(range(num_molecules))
@@ -508,13 +524,6 @@ def main(args):
     logger.info("DataLoaders created.")
     logger.info("--- Data Preparation Complete ---")
 
-    '''
-    # 模块6：计算数据集统计量
-    if args.compute_stats:
-        # 使用训练集加载器来计算统计数据
-        compute_dataset_stats(train_loader, logger=logger)
-        return # 计算完毕后直接退出程序
-    '''
 
     ## 模块4: 模型实例化与配置 
 
@@ -537,9 +546,6 @@ def main(args):
     
     # b. 生成网络
     generator_network = E_DiT_Network(args)
-    
-    # d. 分子片段切割模块(一个工具，不是nn.Module)
-    fragmenter = generate_single_centered_subgraph()
     
     # 将模型移动到指定设备
     sorting_network.to(device)
@@ -574,7 +580,7 @@ def main(args):
         avg_nodes, avg_edges, avg_degree = compute_dataset_stats(
             train_loader,
             sorting_network=sorting_network,
-            fragmenter=fragmenter,
+            subgraph_generator_fn=generate_single_centered_subgraph,
             device=device,
             logger=logger
         )
@@ -592,8 +598,17 @@ def main(args):
         logger.info("Automatic Mixed Precision (AMP) enabled.")
 
     # 模型训练
-    scheduler = HierarchicalDiffusionScheduler()
-    train(args, logger, train_loader, val_loader, sorting_network, generator_network, scheduler, fragmenter, amp_autocast, loss_scaler) 
+    scheduler = HierarchicalDiffusionScheduler(
+        num_atom_types=args.num_atom_types,
+        num_bond_types=args.num_bond_types,
+        T_full=args.T_full,
+        T1=args.T1,
+        T2=args.T2,
+        s=args.s,
+        device=args.device
+    )
+    train(args, logger, train_loader, val_loader, sorting_network, generator_network, scheduler, subgraph_generator_fn=generate_single_centered_subgraph, amp_autocast=amp_autocast,
+        loss_scaler=loss_scaler)
 
     # 分子生成接口
 
@@ -602,4 +617,7 @@ if __name__ == '__main__':
     args = parser.parse_args()  
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+    # 确保用于保存args的目录存在
+    if args.args_save_dir:
+        Path(args.args_save_dir).mkdir(parents=True, exist_ok=True)
     main(args)

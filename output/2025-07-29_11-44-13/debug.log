@@ -1,0 +1,218 @@
+2025-07-29 11:44:13,822 - logger.py:50 - Logger initialized. Distributed config synchronized.
+2025-07-29 11:44:13,822 - logger.py:50 - All outputs for this run will be saved to: ./output\2025-07-29_11-44-13
+2025-07-29 11:44:13,822 - logger.py:50 - Master process (rank 0) configuration:
+Namespace(output_dir='./output', args_save_dir='./saved_args', seed=42, device='cuda', val_log_freq=5, val_thre=10, epochs=500, learning_rate=0.001, lr_min_factor=0.01, w_a=1.0, w_r=1.0, w_b=1.0, lambda_aux=0.01, batch_ratio_val=10, T_full=1000, T1=100, T2=900, s=0.008, max_atoms=50, min_atoms=3, num_generate=100, model_ckpt='./output/model.pt', data_split_path='./data_splits', fragment_data_dir='./prepared_data/gdb9_unique_subgraphs_json', val_split_percentage=0.05, train_batch_size=32, val_batch_size=256, num_workers=4, num_blocks=6, num_heads=4, norm_layer='layer', time_embed_dim=128, irreps_node_hidden='128x0e+64x1o+32x2e', irreps_edge='128x0e+64x1o+32x2e', irreps_node_attr='6x0e', irreps_edge_attr_type='5x0e', irreps_sh='1x0e+1x1e+1x2e', irreps_head='32x0e+16x1o+8x2e', irreps_mlp_mid='384x0e+192x1o+96x2e', irreps_pre_attn=None, num_atom_types=6, num_bond_types=5, node_embedding_hidden_dim=64, bond_embedding_dim=64, edge_update_hidden_dim=64, num_rbf=128, rbf_cutoff=5.0, fc_neurons=[64, 64], avg_degree=10.0, rescale_degree=False, nonlinear_message=False, hidden_dim=128, alpha_drop=0.2, proj_drop=0.0, out_drop=0.0, drop_path_rate=0.0, ring_guide_ckpt='./ring_network/ring_predictor_epoch_40.pt', optimizer='adamw', weight_decay=0.01, warmup_epochs=10, amp=True, compute_stats=False, world_size=1, dist_url='env://', local_rank=0, distributed=False, rank=0, run_dir='./output\\2025-07-29_11-44-13', checkpoints_dir='./output\\2025-07-29_11-44-13\\checkpoints', generated_pyg_dir='./output\\2025-07-29_11-44-13\\generated_pyg', generated_images_dir='./output\\2025-07-29_11-44-13\\generated_images', tb_logs_dir='./output\\2025-07-29_11-44-13\\tb_logs', results_dir='./output\\2025-07-29_11-44-13\\results')
+2025-07-29 11:44:13,822 - logger.py:50 - args_save_path:./saved_args\args_2025-07-29_11-44-13.pt
+2025-07-29 11:44:13,826 - logger.py:50 - Using device: cuda
+2025-07-29 11:44:13,833 - logger.py:50 - CUDA device name: NVIDIA GeForce RTX 4060 Laptop GPU
+2025-07-29 11:44:13,833 - logger.py:50 - Environment initialization complete.
+2025-07-29 11:44:13,833 - logger.py:50 - --- Starting Data Preparation (JSON Fragment Version) ---
+2025-07-29 11:44:13,848 - logger.py:50 - Loading existing data split from: ./data_splits\bfs_json_split_indices.pt
+2025-07-29 11:44:13,851 - logger.py:50 - Train dataset size: 1464, Validation dataset size: 77
+2025-07-29 11:44:13,851 - logger.py:50 - DataLoaders created.
+2025-07-29 11:44:13,851 - logger.py:50 - --- Data Preparation Complete ---
+2025-07-29 11:44:13,851 - logger.py:50 - --- Initializing Models ---
+2025-07-29 11:44:23,179 - logger.py:50 - Models moved to device.
+2025-07-29 11:44:23,179 - logger.py:50 - --- Model Architectures ---
+2025-07-29 11:44:23,179 - logger.py:50 - E_DiT_Network(
+  (embedding_layer): InputEmbeddingLayer(
+    (node_embedding_net): NodeEmbeddingNetwork(
+      (ring_embedding): Embedding(2, 64)
+      (atom_type_embedding): Linear(in_features=6, out_features=64, bias=False)
+      (feature_lin): LinearRS(
+        (tp): TensorProduct(64x0e x 1x0e -> 128x0e+64x1o+32x2e | 8192 paths | 8192 weights)
+        (bias): ParameterList(  (0): Parameter containing: [torch.float32 of size 128 (cuda:0)])
+      )
+    )
+    (edge_embedding_net): EdgeEmbeddingNetwork(
+      (rbf): GaussianRadialBasisLayer(mean_init_max=1.0, mean_init_min=0, std_init_max=1.0, std_init_min=0.0078125)
+      (bond_embedding): Linear(in_features=5, out_features=64, bias=False)
+      (fusion_tp): FullyConnectedTensorProductRescale(
+        (tp): TensorProduct(1x0e+1x1e+1x2e x 192x0e -> 128x0e+64x1o+32x2e | 30720 paths | 30720 weights)
+        (bias): ParameterList(  (0): Parameter containing: [torch.float32 of size 128 (cuda:0)])
+      )
+    )
+    (edge_degree_net): EdgeDegreeEmbeddingNetwork(
+      (exp): LinearRS(
+        (tp): TensorProduct(1x0e x 1x0e -> 128x0e+64x1o+32x2e | 128 paths | 128 weights)
+        (bias): ParameterList(  (0): Parameter containing: [torch.float32 of size 128 (cuda:0)])
+      )
+      (dw): TensorProductRescale(
+        (tp): TensorProduct(128x0e+64x1o+32x2e x 1x0e+1x1e+1x2e -> 160x0e+192x1o+224x2e | 576 paths | 576 weights)
+      )
+      (rad): RadialProfile(
+        (net): Sequential(
+          (0): Linear(in_features=128, out_features=128, bias=True)
+          (1): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+          (2): SiLU()
+          (3): Linear(in_features=128, out_features=576, bias=False)
+        )
+      )
+      (proj): LinearRS(
+        (tp): TensorProduct(160x0e+192x1o+224x2e x 1x0e -> 128x0e+64x1o+32x2e | 39936 paths | 39936 weights)
+        (bias): ParameterList(  (0): Parameter containing: [torch.float32 of size 128 (cuda:0)])
+      )
+      (scale_scatter): ScaledScatter(avg_aggregate_num=10.0)
+    )
+  )
+  (time_embedding): TimestepEmbedder(
+    (mlp): Sequential(
+      (0): Linear(in_features=256, out_features=128, bias=True)
+      (1): SiLU()
+      (2): Linear(in_features=128, out_features=128, bias=True)
+    )
+  )
+  (blocks): ModuleList(
+    (0-5): 6 x E_DiT_Block(
+      (node_norm_1): AdaEquiLayerNorm(128x0e+64x1o+32x2e, eps=1e-05, time_dim=256)
+      (ga): GraphAttention(
+        rescale_degree=False, 
+        (merge_src): LinearRS(
+          (tp): TensorProduct(128x0e+64x1o+32x2e x 1x0e -> 128x0e+64x1o+32x2e | 21504 paths | 21504 weights)
+          (bias): ParameterList(  (0): Parameter containing: [torch.float32 of size 128 (cuda:0)])
+        )
+        (merge_dst): LinearRS(
+          (tp): TensorProduct(128x0e+64x1o+32x2e x 1x0e -> 128x0e+64x1o+32x2e | 21504 paths | 21504 weights)
+        )
+        (sep): SeparableFCTP(
+          (dtp): TensorProductRescale(
+            (tp): TensorProduct(128x0e+64x1o+32x2e x 1x0e+1x1e+1x2e -> 160x0e+192x1o+224x2e | 576 paths | 576 weights)
+          )
+          (lin): LinearRS(
+            (tp): TensorProduct(160x0e+192x1o+224x2e x 1x0e -> 256x0e+64x1o+32x2e | 60416 paths | 60416 weights)
+            (bias): ParameterList(  (0): Parameter containing: [torch.float32 of size 256 (cuda:0)])
+          )
+        )
+        (vec2heads): Vec2AttnHeads(irreps_head=64x0e+16x1o+8x2e, num_heads=4)
+        (alpha_act): Activation(
+          32x0e -> 32x0e, 
+          (acts): ModuleList(
+            (0): normalize2mom(
+              (f): SmoothLeakyReLU(negative_slope=0.2)
+            )
+          )
+        )
+        (heads2vec): AttnHeads2Vec(irreps_head=32x0e+16x1o+8x2e)
+        (alpha_dropout): Dropout(p=0.2, inplace=False)
+        (proj): LinearRS(
+          (tp): TensorProduct(128x0e+64x1o+32x2e x 1x0e -> 128x0e+64x1o+32x2e | 21504 paths | 21504 weights)
+          (bias): ParameterList(  (0): Parameter containing: [torch.float32 of size 128 (cuda:0)])
+        )
+      )
+      (node_norm_2): AdaEquiLayerNorm(128x0e+64x1o+32x2e, eps=1e-05, time_dim=256)
+      (node_ffn): FeedForwardNetwork(
+        (fctp_1): FullyConnectedTensorProductRescaleSwishGate(
+          (tp): TensorProduct(128x0e+64x1o+32x2e x 6x0e -> 672x0e+192x1o+96x2e | 608256 paths | 608256 weights)
+          (bias): ParameterList(  (0): Parameter containing: [torch.float32 of size 672 (cuda:0)])
+          (gate): Gate (672x0e+192x1o+96x2e -> 384x0e+192x1o+96x2e)
+        )
+        (fctp_2): FullyConnectedTensorProductRescale(
+          (tp): TensorProduct(384x0e+192x1o+96x2e x 6x0e -> 128x0e+64x1o+32x2e | 387072 paths | 387072 weights)
+          (bias): ParameterList(  (0): Parameter containing: [torch.float32 of size 128 (cuda:0)])
+        )
+      )
+      (edge_norm_1): AdaEquiLayerNorm(128x0e+64x1o+32x2e, eps=1e-05, time_dim=256)
+      (edge_norm_2): AdaEquiLayerNorm(128x0e+64x1o+32x2e, eps=1e-05, time_dim=256)
+      (edge_updater): EdgeUpdateNetwork(
+        (time_embed): SinusoidalTimeEmbedding()
+        (bond_ffn_left): EquivariantBondFFN(
+          (bond_linear): LinearRS(
+            (tp): TensorProduct(128x0e+64x1o+32x2e x 1x0e -> 64x0e+32x1o+16x2e | 10752 paths | 10752 weights)
+            (bias): ParameterList(  (0): Parameter containing: [torch.float32 of size 64 (cuda:0)])
+          )
+          (node_linear): LinearRS(
+            (tp): TensorProduct(128x0e+64x1o+32x2e x 1x0e -> 64x0e+32x1o+16x2e | 10752 paths | 10752 weights)
+            (bias): ParameterList(  (0): Parameter containing: [torch.float32 of size 64 (cuda:0)])
+          )
+          (tensor_product): FullTensorProduct(64x0e+32x1o+16x2e x 64x0e+32x1o+16x2e -> 5376x0e+5120x1o+1280x1e+1024x2o+3328x2e+1024x3o+256x3e+256x4e | 17664 paths | 0 weights)
+          (inter_module): Sequential(
+            (0): Linear(4096x0e+1024x0e+256x0e+2048x1o+2048x1o+512x1o+512x1o+1024x1e+256x1e+512x2o+512x2o+1024x2e+1024x2e+1024x2e+256x2e+512x3o+512x3o+256x3e+256x4e -> 128x0e+64x1o+32x2e | 1122304 weights)
+            (1): StableNormActivation()
+            (2): Linear(128x0e+64x1o+32x2e -> 128x0e+64x1o+32x2e | 21504 weights)
+          )
+          (gate_mlp): Sequential(
+            (0): Linear(128x0e+64x1o+32x2e+128x0e+64x1o+32x2e+128x0e -> 128x0e+64x1o+32x2e+128x0e+64x1o+32x2e+128x0e | 167936 weights)
+            (1): StableNormActivation()
+            (2): Linear(128x0e+64x1o+32x2e+128x0e+64x1o+32x2e+128x0e -> 1x0e | 384 weights)
+          )
+        )
+        (bond_ffn_right): EquivariantBondFFN(
+          (bond_linear): LinearRS(
+            (tp): TensorProduct(128x0e+64x1o+32x2e x 1x0e -> 64x0e+32x1o+16x2e | 10752 paths | 10752 weights)
+            (bias): ParameterList(  (0): Parameter containing: [torch.float32 of size 64 (cuda:0)])
+          )
+          (node_linear): LinearRS(
+            (tp): TensorProduct(128x0e+64x1o+32x2e x 1x0e -> 64x0e+32x1o+16x2e | 10752 paths | 10752 weights)
+            (bias): ParameterList(  (0): Parameter containing: [torch.float32 of size 64 (cuda:0)])
+          )
+          (tensor_product): FullTensorProduct(64x0e+32x1o+16x2e x 64x0e+32x1o+16x2e -> 5376x0e+5120x1o+1280x1e+1024x2o+3328x2e+1024x3o+256x3e+256x4e | 17664 paths | 0 weights)
+          (inter_module): Sequential(
+            (0): Linear(4096x0e+1024x0e+256x0e+2048x1o+2048x1o+512x1o+512x1o+1024x1e+256x1e+512x2o+512x2o+1024x2e+1024x2e+1024x2e+256x2e+512x3o+512x3o+256x3e+256x4e -> 128x0e+64x1o+32x2e | 1122304 weights)
+            (1): StableNormActivation()
+            (2): Linear(128x0e+64x1o+32x2e -> 128x0e+64x1o+32x2e | 21504 weights)
+          )
+          (gate_mlp): Sequential(
+            (0): Linear(128x0e+64x1o+32x2e+128x0e+64x1o+32x2e+128x0e -> 128x0e+64x1o+32x2e+128x0e+64x1o+32x2e+128x0e | 167936 weights)
+            (1): StableNormActivation()
+            (2): Linear(128x0e+64x1o+32x2e+128x0e+64x1o+32x2e+128x0e -> 1x0e | 384 weights)
+          )
+        )
+        (node_ffn_left): Linear(128x0e+64x1o+32x2e -> 128x0e+64x1o+32x2e | 21504 weights)
+        (node_ffn_right): Linear(128x0e+64x1o+32x2e -> 128x0e+64x1o+32x2e | 21504 weights)
+        (self_ffn): Linear(128x0e+64x1o+32x2e -> 128x0e+64x1o+32x2e | 21504 weights)
+        (final_norm_and_transform): AdaEquiLayerNorm(128x0e+64x1o+32x2e, eps=1e-05, time_dim=256)
+      )
+      (edge_ffn): FeedForwardNetwork(
+        (fctp_1): FullyConnectedTensorProductRescaleSwishGate(
+          (tp): TensorProduct(128x0e+64x1o+32x2e x 5x0e -> 672x0e+192x1o+96x2e | 506880 paths | 506880 weights)
+          (bias): ParameterList(  (0): Parameter containing: [torch.float32 of size 672 (cuda:0)])
+          (gate): Gate (672x0e+192x1o+96x2e -> 384x0e+192x1o+96x2e)
+        )
+        (fctp_2): FullyConnectedTensorProductRescale(
+          (tp): TensorProduct(384x0e+192x1o+96x2e x 5x0e -> 128x0e+64x1o+32x2e | 322560 paths | 322560 weights)
+          (bias): ParameterList(  (0): Parameter containing: [torch.float32 of size 128 (cuda:0)])
+        )
+      )
+    )
+  )
+  (final_norm): AdaEquiLayerNorm(128x0e+64x1o+32x2e, eps=1e-05, time_dim=256)
+  (final_edge_norm): AdaEquiLayerNorm(128x0e+64x1o+32x2e, eps=1e-05, time_dim=256)
+  (output_heads): MultiTaskHead(
+    (node_scalar_proj): LinearRS(
+      (tp): TensorProduct(128x0e+64x1o+32x2e x 1x0e -> 128x0e | 16384 paths | 16384 weights)
+      (bias): ParameterList(  (0): Parameter containing: [torch.float32 of size 128 (cuda:0)])
+    )
+    (atom_type_head): Sequential(
+      (0): Linear(in_features=128, out_features=128, bias=True)
+      (1): SiLU()
+      (2): Dropout(p=0.0, inplace=False)
+      (3): Linear(in_features=128, out_features=6, bias=True)
+    )
+    (node_vector_proj): LinearRS(
+      (tp): TensorProduct(128x0e+64x1o+32x2e x 1x0e -> 64x1o | 4096 paths | 4096 weights)
+      (bias): ParameterList()
+    )
+    (coord_dropout): Dropout(p=0.0, inplace=False)
+    (coord_head): LinearRS(
+      (tp): TensorProduct(64x1o x 1x0e -> 1x1o | 64 paths | 64 weights)
+      (bias): ParameterList()
+    )
+    (bond_head_tp): FullyConnectedTensorProductRescale(
+      (tp): TensorProduct(128x0e+64x1o+32x2e x 128x0e+64x1o+32x2e -> 1x0e | 21504 paths | 21504 weights)
+      (bias): ParameterList(  (0): Parameter containing: [torch.float32 of size 1 (cuda:0)])
+    )
+    (bond_head_mlp): Sequential(
+      (0): Linear(in_features=481, out_features=128, bias=True)
+      (1): SiLU()
+      (2): Dropout(p=0.0, inplace=False)
+      (3): Linear(in_features=128, out_features=5, bias=True)
+    )
+  )
+)
+2025-07-29 11:44:23,195 - logger.py:50 - --- Parameter Statistics ---
+2025-07-29 11:44:23,195 - logger.py:50 - Generator Network Trainable Params: 31.48 M
+2025-07-29 11:44:23,195 - logger.py:50 - -----------------------------
+2025-07-29 11:44:23,195 - logger.py:50 - --- Model Initialization Complete ---
+2025-07-29 11:44:23,195 - logger.py:50 - Automatic Mixed Precision (AMP) enabled.
+2025-07-29 11:44:23,334 - logger.py:50 - 模型检查点将保存在: ./output\2025-07-29_11-44-13\checkpoints
+2025-07-29 11:44:23,334 - logger.py:50 - 开始训练...

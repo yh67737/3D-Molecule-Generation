@@ -1,6 +1,11 @@
 import torch
 import math
-import args # 修改
+import torch.nn.functional as F
+import sys
+import os
+
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, project_root)
 
 class HierarchicalDiffusionScheduler:
     """
@@ -9,13 +14,13 @@ class HierarchicalDiffusionScheduler:
     """
     def __init__(
         self,
-        num_atom_types: int,
-        num_bond_types: int,
-        T_full: int = args.T_full,
-        T1: int = args.T1,
-        T2: int = args.T2,
-        s: float = args.s,
-        device: str = args.device
+        num_atom_types: int ,
+        num_bond_types: int ,
+        T_full: int ,
+        T1: int ,
+        T2: int ,
+        s: float ,
+        device: str
     ):
         """
         Args:
@@ -126,6 +131,8 @@ class HierarchicalDiffusionScheduler:
             sqrt_one_minus_bar = self._get_vals_at_t(self.sqrt_one_minus_delta_bars, t)
         else:
             raise ValueError(f"Unknown schedule type: {schedule_type}")
+        sqrt_bar = sqrt_bar.to(r_0.device)
+        sqrt_one_minus_bar = sqrt_one_minus_bar.to(r_0.device)
         r_t = sqrt_bar * r_0 + sqrt_one_minus_bar * noise
         return r_t
 
@@ -140,3 +147,83 @@ class HierarchicalDiffusionScheduler:
             raise ValueError(f"Unknown schedule type: {schedule_type}")
         predicted_noise = (r_t - sqrt_bar_t * predicted_r0) / torch.clamp(sqrt_one_minus_bar_t, min=1e-8)
         return predicted_noise
+    
+    def compute_discrete_t_minus_1(
+        self,
+        x_t: torch.Tensor,
+        pred_x0_logits: torch.Tensor,
+        t: int,
+        schedule_type: str,
+        is_atom: bool
+    ) -> torch.Tensor:
+        """
+        根据D3PM公式计算t-1步的离散特征（原子类型/边属性）概率分布并采样
+    
+       Args:
+            x_t: 当前t步的离散特征（one-hot格式，shape: [N, C]）
+            pred_x0_logits: 预测的x0的logits（shape: [N, C]）
+            t: 当前时间步（整数）
+            schedule_type: 调度类型，'alpha'或'gamma'
+            is_atom: 是否为原子类型（True）或边属性（False）
+        
+        Returns:
+            t-1步的离散特征采样结果（one-hot格式，shape: [N, C]）
+        """
+        # 1. 获取对应的Q_bar矩阵和类别数
+        if is_atom:
+            Q_bar = self.Q_bar_alpha_a if schedule_type == 'alpha' else self.Q_bar_gamma_a
+            num_classes = self.num_atom_types
+        else:
+            Q_bar = self.Q_bar_alpha_b if schedule_type == 'alpha' else self.Q_bar_gamma_b
+            num_classes = self.num_bond_types
+    
+        # 2. 计算单步转移矩阵Q_t (t -> t-1)
+        # Q_t = Q_bar[t] * Q_bar[t-1]^(-1)（利用累积矩阵的逆运算）
+        if t == 0:
+            raise ValueError("t=0无法计算t-1步")
+        Q_bar_t = Q_bar[t]  # [C, C]
+        Q_bar_t_minus_1 = Q_bar[t-1]  # [C, C]
+    
+        # 计算Q_bar[t-1]的伪逆（处理奇异矩阵情况）
+        Q_bar_t_minus_1_inv = torch.linalg.pinv(Q_bar_t_minus_1)
+        Q_t = Q_bar_t @ Q_bar_t_minus_1_inv  # [C, C]
+        Q_t = Q_t.clamp(min=0.0)  # 确保非负性
+        Q_t = Q_t / Q_t.sum(dim=1, keepdim=True)  # 归一化行
+    
+        # 3. 计算p_theta(x0 | x_t)：预测x0的概率分布
+        p_x0 = F.softmax(pred_x0_logits, dim=-1)  # [N, C]
+        
+        # 4. 计算q(x_{t-1} | x0) = Q_bar[t-1][x0, x_{t-1}]
+        # 5. 计算q(x_t | x_{t-1}) = Q_t[x_{t-1}, x_t]
+        # 6. 联合计算p(x_{t-1} | x_t) ∝ sum_x0 [q(x_t | x_{t-1}) * q(x_{t-1} | x0) * p(x0 | x_t)]
+    
+        # 转换x_t为索引格式（从one-hot中提取）
+        x_t_idx = torch.argmax(x_t, dim=-1)  # [N]
+    
+        # 初始化t-1步的概率分布
+        batch_size = x_t.shape[0]
+        p_t_minus_1 = torch.zeros(batch_size, num_classes, device=self.device)
+    
+        for i in range(batch_size):
+            # 当前x_t的类别索引
+            xt_i = x_t_idx[i]
+        
+            # 对每个可能的x_{t-1}类别计算概率
+            for x_prev in range(num_classes):
+                # q(x_t | x_{t-1}) = Q_t[x_prev, xt_i]
+                q_xt_given_xprev = Q_t[x_prev, xt_i]
+            
+                # 累加所有x0的贡献：q(x_prev | x0) * p(x0 | x_t)
+                sum_x0 = torch.sum(Q_bar_t_minus_1[:, x_prev] * p_x0[i])
+            
+                # 累积概率
+                p_t_minus_1[i, x_prev] = q_xt_given_xprev * sum_x0
+    
+        # 归一化概率分布
+        p_t_minus_1 = p_t_minus_1 / p_t_minus_1.sum(dim=1, keepdim=True).clamp(min=1e-8)
+    
+        # 7. 基于概率分布采样并转换为one-hot格式
+        sampled_idx = torch.multinomial(p_t_minus_1, num_samples=1).squeeze(1)  # [N]
+        sampled_onehot = F.one_hot(sampled_idx, num_classes=num_classes).float()
+    
+        return sampled_onehot
