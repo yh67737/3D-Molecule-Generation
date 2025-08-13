@@ -339,49 +339,71 @@ class SortingNetwork(nn.Module):
             # 步骤c: GNN计算
             # 将动态更新后的节点特征和图的其他信息传入GNN
             node_embeddings = self.gnn_core(x_t, pos, edge_index, edge_attr) # edge_index根据PyG的稀疏批处理测略相应地做了改变，不再保持每张图从0开始编号，而是被转换成了全局编号
+            
             # 将GNN输出的嵌入通过MLP转换为logits
             logits = self.output_mlp(node_embeddings).squeeze(-1) # Shape: [num_total_nodes]
 
+
             # 步骤d: 屏蔽已选择节点
-            # 将已选节点的logits设为负无穷，使其softmax后概率为0
-            logits[nodes_selected_mask] = -float('inf')
+            logits = torch.where(nodes_selected_mask.detach(), -float('inf'), logits)
 
             # 批处理softmax和采样
-            # 将所有节点logits从长向量转换为[batch_size, max_nodes]矩阵
-            dense_logits, _ = to_dense_batch(logits, batch, fill_value=-float('inf')) 
-            # 对每个图独立进行Softmax，得到概率分布
-            probs = F.softmax(dense_logits, dim=1) # Shape: [batch_size, max_nodes_in_batch]
+            dense_logits, _ = to_dense_batch(logits, batch, fill_value=-float('inf'))
             
+            # =================== [开始最终修复] ===================
+            # 核心修复：处理全为-inf的行，以防止在计算softmax时产生NaN
+
+            # 1. 找到那些所有 logits 都为 -inf 的行（即已选完的图）
+            all_inf_mask = torch.all(dense_logits == -float('inf'), dim=1)
+            
+            # 2. 对这些行进行“无害化”处理：
+            #    我们将这些行中的第一个元素设置为0。这样，torch.max的结果就是0，
+            #    避免了 -inf - (-inf) 的情况。后续 softmax 将会为该行生成一个
+            #    one-hot 向量 [1, 0, 0, ...]，这是一个有效的概率分布，
+            #    可以安全地传入 multinomial，尽管我们后续不会使用它的采样结果。
+            if all_inf_mask.any():
+                dense_logits[all_inf_mask, 0] = 0.0
+
+            # 3. 现在可以安全地进行数值稳定的 softmax 计算了
+            logits_stable = dense_logits - torch.max(dense_logits, dim=1, keepdim=True).values
+            probs = F.softmax(logits_stable, dim=1)
+            
+            # =================== [结束最终修复] ===================
+
             # 步骤e: 采样
-            # 创建一个掩码标记出哪些图还没有完成排序(循环次数t小于其节点数)
             graphs_not_done_mask = (t < num_nodes_per_graph)
             if not graphs_not_done_mask.any():
-                break # 所有图都已完成排序
+                break
             
-            # 只对未完成的图进行采样(局部索引)
-            sampled_local_indices = torch.multinomial(probs[graphs_not_done_mask].detach(), num_samples=1).squeeze(-1) ### 疑问：效果是什么
+            # multinomial 现在可以安全执行，因为它收到的 probs 不会再包含 NaN
+            sampled_local_indices = torch.multinomial(probs[graphs_not_done_mask].detach(), num_samples=1).squeeze(-1)
 
             # 步骤f: 记录对数概率并更新状态
-            # 使用.gather()找到被采样节点的概率并计算对数
-            log_prob_t = torch.log(probs[graphs_not_done_mask].gather(1, sampled_local_indices.unsqueeze(-1)).squeeze(-1) + 1e-9) 
-            # 累加到对应的图上
-            total_log_probs[graphs_not_done_mask] += log_prob_t 
+            log_prob_t = torch.log(probs[graphs_not_done_mask].gather(1, sampled_local_indices.unsqueeze(-1)).squeeze(-1) + 1e-9)
+            
+            # 只对未完成的图进行概率累加，自动忽略那些我们“无害化处理”过的已完成的图
+            total_log_probs[graphs_not_done_mask] += log_prob_t
 
-             # 将采样的局部索引(如第i个图中的第j个节点)转换为全局索引
-             # data.ptr记录了每个图在长向量中的起始位置，用于实现转换
+            # 将采样的局部索引转换为全局索引
             batch_indices_not_done = graphs_not_done_mask.nonzero().squeeze(-1)
 
-            # 检查data对象是否有ptr属性，没有则手动计算
             ptr = data.ptr if hasattr(data, 'ptr') else None
             if ptr is None:
-                # 手动计算ptr
                 ptr = torch.cat([torch.tensor([0], device=device), num_nodes_per_graph.cumsum(dim=0)])
 
-            ptr_not_done = data.ptr[batch_indices_not_done]
+            ptr_not_done = ptr[batch_indices_not_done]
             sampled_global_indices = ptr_not_done + sampled_local_indices
 
-            # 更新全局状态
-            nodes_selected_mask[sampled_global_indices] = True
+            # 1. 克隆当前的 mask，得到一个全新的张量，它与计算图无关
+            next_nodes_selected_mask = nodes_selected_mask.clone()
+            
+            # 2. 在这个新的 mask 上进行修改
+            next_nodes_selected_mask[sampled_global_indices] = True
+            
+            # 3. 将变量名重新指向这个新的、已更新的 mask，用于下一次循环
+            nodes_selected_mask = next_nodes_selected_mask
+            
+            # (旧的位置编码更新逻辑也需要相应调整)
             node_positions[sampled_global_indices] = t
             
             # 记录排序结果
@@ -389,27 +411,17 @@ class SortingNetwork(nn.Module):
                 graph_idx = batch_indices_not_done[i]
                 orderings[graph_idx].append(global_idx.item())
         
-        ## 将排序结果从全局索引转化为局部索引
+        # 将排序结果从全局索引转化为局部索引
         local_orderings = []
         for i in range(batch_size):
-            # 获取第i个图的全局索引顺序
             global_ordering_list = orderings[i]
-            if not global_ordering_list: # 如果某个图没有节点，顺序为空
+            if not global_ordering_list:
                 local_orderings.append([])
                 continue
 
-            # 转换为Tensor，方便进行批处理减法
             global_ordering_tensor = torch.tensor(orderings[i], device=device, dtype=torch.long)
-            
-            # 获取第i个图在PyG批次大图中的起始索引(指针)
-            # data.ptr是形如[0, N1, N1+N2, ...]的张量，N1是第一个图的节点数
             graph_start_ptr = data.ptr[i] if hasattr(data, 'ptr') else ptr[i]
-            
-            # 全局索引减去起始指针，就得到了局部索引
             local_ordering_tensor = global_ordering_tensor - graph_start_ptr
-            
-            # 将结果存入新的列表
             local_orderings.append(local_ordering_tensor.tolist())
 
-        # 返回转换后的局部索引顺序
         return local_orderings, total_log_probs

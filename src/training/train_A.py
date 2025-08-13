@@ -139,8 +139,51 @@ def calculate_atom_type_loss(
     return final_loss.mean()
 
 # 2.2 原子坐标损失
+# def calculate_coordinate_loss_wrapper(
+#     predicted_r0: torch.Tensor,      # 模型预测的干净坐标 (t=0), shape [M, 3]
+#     true_noise: torch.Tensor,        # 用于生成 r_t 的真实高斯噪声, shape [M, 3]
+#     r_t: torch.Tensor,               # 输入到模型的加噪坐标 (t>0), shape [M, 3]
+#     t: torch.Tensor,                 # 每个坐标对应的时间步, shape [M]
+#     scheduler,                       # HierarchicalDiffusionScheduler 实例
+#     schedule_type: str               # 使用的调度类型, 'alpha' 或 'delta'
+# ) -> torch.Tensor:
+#     """
+#     计算原子坐标的损失。
+
+#     这是一个包装函数，它接收模型预测的 r0，使用调度器将其转换为
+#     预测的噪声 epsilon，然后计算与真实噪声的 L2 损失。
+
+#     Args:
+#         predicted_r0: 模型预测的干净坐标。
+#         true_noise: 真实的噪声。
+#         r_t: 加噪后的坐标。
+#         t: 时间步。
+#         scheduler: 噪声调度器实例。
+#         schedule_type: 使用的调度类型 ('alpha' 或 'delta')。
+
+#     Returns:
+#         torch.Tensor: 计算出的标量损失值。
+#     """
+#     # 1. 检查输入是否为空。
+#     # 在策略II中，如果目标原子被某种方式移除了（虽然不太可能），这可以防止出错。
+#     if predicted_r0.shape[0] == 0:
+#         return torch.tensor(0.0, device=predicted_r0.device)
+
+#     # 2. 调用调度器的核心方法，从 predicted_r0 反推出 predicted_noise
+#     predicted_noise = scheduler.get_predicted_noise_from_r0(
+#         r_t=r_t,
+#         t=t,
+#         predicted_r0=predicted_r0,
+#         schedule_type=schedule_type
+#     )
+
+#     # 3. 计算预测噪声和真实噪声之间的 L2 损失 (均方误差, Mean Squared Error)
+#     # F.mse_loss(A, B) 会计算 (A - B)^2 的所有元素的平均值。
+#     loss = F.mse_loss(predicted_noise, true_noise)
+    
+#     return loss
 def calculate_coordinate_loss_wrapper(
-    predicted_r0: torch.Tensor,      # 模型预测的干净坐标 (t=0), shape [M, 3]
+    predicted_noise: torch.Tensor,   # 模型预测的噪声, shape [M, 3]
     true_noise: torch.Tensor,        # 用于生成 r_t 的真实高斯噪声, shape [M, 3]
     r_t: torch.Tensor,               # 输入到模型的加噪坐标 (t>0), shape [M, 3]
     t: torch.Tensor,                 # 每个坐标对应的时间步, shape [M]
@@ -150,11 +193,10 @@ def calculate_coordinate_loss_wrapper(
     """
     计算原子坐标的损失。
 
-    这是一个包装函数，它接收模型预测的 r0，使用调度器将其转换为
-    预测的噪声 epsilon，然后计算与真实噪声的 L2 损失。
+    这是一个包装函数，它接收模型预测的噪声，然后计算与真实噪声的 L2 损失。
 
     Args:
-        predicted_r0: 模型预测的干净坐标。
+        predicted_noise: 模型预测的噪声。
         true_noise: 真实的噪声。
         r_t: 加噪后的坐标。
         t: 时间步。
@@ -166,21 +208,13 @@ def calculate_coordinate_loss_wrapper(
     """
     # 1. 检查输入是否为空。
     # 在策略II中，如果目标原子被某种方式移除了（虽然不太可能），这可以防止出错。
-    if predicted_r0.shape[0] == 0:
-        return torch.tensor(0.0, device=predicted_r0.device)
+    if predicted_noise.shape[0] == 0:
+        return torch.tensor(0.0, device=predicted_noise.device)
 
-    # 2. 调用调度器的核心方法，从 predicted_r0 反推出 predicted_noise
-    predicted_noise = scheduler.get_predicted_noise_from_r0(
-        r_t=r_t,
-        t=t,
-        predicted_r0=predicted_r0,
-        schedule_type=schedule_type
-    )
-
-    # 3. 计算预测噪声和真实噪声之间的 L2 损失 (均方误差, Mean Squared Error)
+    # 2. 计算预测噪声和真实噪声之间的 L2 损失 (均方误差, Mean Squared Error)
     # F.mse_loss(A, B) 会计算 (A - B)^2 的所有元素的平均值。
     loss = F.mse_loss(predicted_noise, true_noise)
-    
+
     return loss
 
 # 2.3 边类型损失
@@ -205,13 +239,6 @@ def calculate_bond_type_loss(
         torch.Tensor: 该批次的平均损失。
     """
 
-    print("--- DEBUG: Bond Logits ---")
-    print(f"Shape: {pred_logits.shape}, Dtype: {pred_logits.dtype}")
-    if pred_logits.numel() > 0:
-        print(f"Min: {pred_logits.min().item()}, Max: {pred_logits.max().item()}, Mean: {pred_logits.mean().item()}")
-    print(f"Contains NaN: {torch.isnan(pred_logits).any().item()}")
-    print(f"Contains Inf: {torch.isinf(pred_logits).any().item()}")
-    print("--------------------------")
     # 1. 检查输入是否为空。如果一个批次中没有需要预测的边，则损失为0。
     # 这在策略II中，如果目标原子是孤立点时可能发生。
     if pred_logits.shape[0] == 0:
@@ -250,75 +277,75 @@ def validate(val_loader, model, s_model, scheduler, args, amp_autocast, fragment
         batch_fc = batch_fc.to(device)
         batch_non_fc = batch_non_fc.to(device)
 
-        with amp_autocast():
-            # 将非全连接的 batch 送入排序网络
-            orders, log_prob_orders = s_model(batch_non_fc)
+        # with amp_autocast():
+        # 将非全连接的 batch 送入排序网络
+        orders, log_prob_orders = s_model(batch_non_fc)
 
-            clean_batch = seg(batch_fc, orders, fragmenter)
+        clean_batch = seg(batch_fc, orders, fragmenter)
 
-            # --- [逻辑与训练循环完全相同] ---
+        # --- [逻辑与训练循环完全相同] ---
 
-            # --- 0. 准备工作 ---
-            num_graphs, num_nodes, num_edges = clean_batch.num_graphs, clean_batch.num_nodes, clean_batch.num_edges
-            scaled_pos = scale_to_unit_sphere(clean_batch.pos, clean_batch.batch)
-            t1 = torch.randint(1, scheduler.T1 + 1, (num_graphs,), device=device)
-            t2 = torch.randint(1, scheduler.T2 + 1, (num_graphs,), device=device)
-            noise1, noise2 = torch.randn_like(scaled_pos), torch.randn_like(scaled_pos)
-            t1_per_node, t1_per_edge = t1[clean_batch.batch], t1[clean_batch.batch[clean_batch.edge_index[0]]]
+        # --- 0. 准备工作 ---
+        num_graphs, num_nodes, num_edges = clean_batch.num_graphs, clean_batch.num_nodes, clean_batch.num_edges
+        scaled_pos = scale_to_unit_sphere(clean_batch.pos, clean_batch.batch)
+        t1 = torch.randint(1, scheduler.T1 + 1, (num_graphs,), device=device)
+        t2 = torch.randint(1, scheduler.T2 + 1, (num_graphs,), device=device)
+        noise1, noise2 = torch.randn_like(scaled_pos), torch.randn_like(scaled_pos)
+        t1_per_node, t1_per_edge = t1[clean_batch.batch], t1[clean_batch.batch[clean_batch.edge_index[0]]]
 
-            # --- 策略 I: 全局去噪 ---
-            noised_pos_I = scheduler.q_sample(scaled_pos, t1_per_node, noise1, 'alpha')
-            noised_x_I = noise_discrete_features(clean_batch.x, scheduler.Q_bar_alpha_a, t1_per_node)
-            noised_edge_attr_I = noise_discrete_features(clean_batch.edge_attr, scheduler.Q_bar_alpha_b, t1_per_edge)
-            noised_data_I = clean_batch.clone(); noised_data_I.pos, noised_data_I.x, noised_data_I.edge_attr = noised_pos_I, noised_x_I, noised_edge_attr_I
-            
-            target_node_mask_I = torch.ones(num_nodes, dtype=torch.bool, device=device)
-            target_edge_mask_I = torch.ones(num_edges, dtype=torch.bool, device=device)
-            
-            predictions_I = model(noised_data_I, t1, target_node_mask_I, target_edge_mask_I)
-            
-            lossI_a = calculate_atom_type_loss(predictions_I['atom_type_logits'], clean_batch.x.argmax(dim=-1), t1_per_node, args.lambda_aux, scheduler.T_full)
-            lossI_r = calculate_coordinate_loss_wrapper(predictions_I['predicted_r0'], noise1, noised_pos_I, t1_per_node, scheduler, 'alpha')
-            lossI_b = calculate_bond_type_loss(predictions_I['bond_logits'], clean_batch.edge_attr.argmax(dim=-1), t1_per_edge, args.lambda_aux, scheduler.T_full)
-            loss_I = args.w_a * lossI_a + args.w_r * lossI_r + args.w_b * lossI_b
-    
-            # --- 策略 II: 局部生成 ---
-            target_node_mask_II = clean_batch.is_new_node.squeeze().bool()
-            context_node_mask_II = ~target_node_mask_II
-            target_edge_mask = (target_node_mask_II[clean_batch.edge_index[0]] | target_node_mask_II[clean_batch.edge_index[1]])
-            context_edge_mask = ~target_edge_mask
-            
-            t_T1_per_node, t_T1_per_edge = torch.full_like(t1_per_node, scheduler.T1), torch.full_like(t1_per_edge, scheduler.T1)
-            t2_per_node, t2_per_edge = t2[clean_batch.batch], t2[clean_batch.batch[clean_batch.edge_index[0]]]
-    
-            noised_pos_context = scheduler.q_sample(scaled_pos[context_node_mask_II], t_T1_per_node[context_node_mask_II], noise2[context_node_mask_II], 'alpha')
-            noised_pos_target = scheduler.q_sample(scaled_pos[target_node_mask_II], t2_per_node[target_node_mask_II], noise2[target_node_mask_II], 'delta')
-            noised_pos_II = torch.zeros_like(scaled_pos); noised_pos_II[context_node_mask_II], noised_pos_II[target_node_mask_II] = noised_pos_context, noised_pos_target
-            
-            noised_x_context = noise_discrete_features(clean_batch.x[context_node_mask_II], scheduler.Q_bar_alpha_a, t_T1_per_node[context_node_mask_II])
-            noised_x_target = noise_discrete_features(clean_batch.x[target_node_mask_II], scheduler.Q_bar_gamma_a, t2_per_node[target_node_mask_II])
-            noised_x_II = torch.zeros_like(clean_batch.x); noised_x_II[context_node_mask_II], noised_x_II[target_node_mask_II] = noised_x_context, noised_x_target
-        
-            noised_edge_attr_context = noise_discrete_features(clean_batch.edge_attr[context_edge_mask], scheduler.Q_bar_alpha_b, t_T1_per_edge[context_edge_mask])
-            noised_edge_attr_target = noise_discrete_features(clean_batch.edge_attr[target_edge_mask], scheduler.Q_bar_gamma_b, t2_per_edge[target_edge_mask])
-            noised_edge_attr_II = torch.zeros_like(clean_batch.edge_attr); noised_edge_attr_II[context_edge_mask], noised_edge_attr_II[target_edge_mask] = noised_edge_attr_context, noised_edge_attr_target
-        
-            noised_data_II = clean_batch.clone(); noised_data_II.pos, noised_data_II.x, noised_data_II.edge_attr = noised_pos_II, noised_x_II, noised_edge_attr_II
-        
-            predictions_II = model(noised_data_II, t2, target_node_mask_II, target_edge_mask)
+        # --- 策略 I: 全局去噪 ---
+        noised_pos_I = scheduler.q_sample(scaled_pos, t1_per_node, noise1, 'alpha')
+        noised_x_I = noise_discrete_features(clean_batch.x, scheduler.Q_bar_alpha_a, t1_per_node)
+        noised_edge_attr_I = noise_discrete_features(clean_batch.edge_attr, scheduler.Q_bar_alpha_b, t1_per_edge)
+        noised_data_I = clean_batch.clone(); noised_data_I.pos, noised_data_I.x, noised_data_I.edge_attr = noised_pos_I, noised_x_I, noised_edge_attr_I
 
-            lossII_a = calculate_atom_type_loss(predictions_II['atom_type_logits'], clean_batch.x[target_node_mask_II].argmax(dim=-1), t2_per_node[target_node_mask_II], args.lambda_aux, scheduler.T_full)
-            lossII_r = calculate_coordinate_loss_wrapper(predictions_II['predicted_r0'], noise2[target_node_mask_II], noised_pos_target, t2_per_node[target_node_mask_II], scheduler, 'delta')
-            lossII_b = calculate_bond_type_loss(predictions_II['bond_logits'], clean_batch.edge_attr[target_edge_mask].argmax(dim=-1), t2_per_edge[target_edge_mask], args.lambda_aux, scheduler.T_full)
-            loss_II = args.w_a * lossII_a + args.w_r * lossII_r + args.w_b * lossII_b
+        target_node_mask_I = torch.ones(num_nodes, dtype=torch.bool, device=device)
+        target_edge_mask_I = torch.ones(num_edges, dtype=torch.bool, device=device)
 
-            # --- 总验证损失 ---
-            total_loss = scheduler.T1 * loss_I + scheduler.T2 * loss_II 
+        predictions_I = model(noised_data_I, t1, target_node_mask_I, target_edge_mask_I)
 
-            reward = (-total_loss - log_prob_orders).detach()  # 奖励必须从计算图中分离，不带梯度
+        lossI_a = calculate_atom_type_loss(predictions_I['atom_type_logits'], clean_batch.x.argmax(dim=-1), args.lambda_aux)
+        lossI_r = calculate_coordinate_loss_wrapper(predictions_I['predicted_r0'], noise1, noised_pos_I, t1_per_node, scheduler, 'alpha')
+        lossI_b = calculate_bond_type_loss(predictions_I['bond_logits'], clean_batch.edge_attr.argmax(dim=-1), args.lambda_aux)
+        loss_I = args.w_a * lossI_a + args.w_r * lossI_r + args.w_b * lossI_b
 
-            # 策略损失 L_policy = -R(π) * log q_φ(π|G)
-            loss_s_model = (-reward * log_prob_orders).mean()
+        # --- 策略 II: 局部生成 ---
+        target_node_mask_II = clean_batch.is_new_node.squeeze().bool()
+        context_node_mask_II = ~target_node_mask_II
+        target_edge_mask = (target_node_mask_II[clean_batch.edge_index[0]] | target_node_mask_II[clean_batch.edge_index[1]])
+        context_edge_mask = ~target_edge_mask
+
+        t_T1_per_node, t_T1_per_edge = torch.full_like(t1_per_node, scheduler.T1), torch.full_like(t1_per_edge, scheduler.T1)
+        t2_per_node, t2_per_edge = t2[clean_batch.batch], t2[clean_batch.batch[clean_batch.edge_index[0]]]
+
+        noised_pos_context = scheduler.q_sample(scaled_pos[context_node_mask_II], t_T1_per_node[context_node_mask_II], noise2[context_node_mask_II], 'alpha')
+        noised_pos_target = scheduler.q_sample(scaled_pos[target_node_mask_II], t2_per_node[target_node_mask_II], noise2[target_node_mask_II], 'delta')
+        noised_pos_II = torch.zeros_like(scaled_pos); noised_pos_II[context_node_mask_II], noised_pos_II[target_node_mask_II] = noised_pos_context, noised_pos_target
+
+        noised_x_context = noise_discrete_features(clean_batch.x[context_node_mask_II], scheduler.Q_bar_alpha_a, t_T1_per_node[context_node_mask_II])
+        noised_x_target = noise_discrete_features(clean_batch.x[target_node_mask_II], scheduler.Q_bar_gamma_a, t2_per_node[target_node_mask_II])
+        noised_x_II = torch.zeros_like(clean_batch.x); noised_x_II[context_node_mask_II], noised_x_II[target_node_mask_II] = noised_x_context, noised_x_target
+
+        noised_edge_attr_context = noise_discrete_features(clean_batch.edge_attr[context_edge_mask], scheduler.Q_bar_alpha_b, t_T1_per_edge[context_edge_mask])
+        noised_edge_attr_target = noise_discrete_features(clean_batch.edge_attr[target_edge_mask], scheduler.Q_bar_gamma_b, t2_per_edge[target_edge_mask])
+        noised_edge_attr_II = torch.zeros_like(clean_batch.edge_attr); noised_edge_attr_II[context_edge_mask], noised_edge_attr_II[target_edge_mask] = noised_edge_attr_context, noised_edge_attr_target
+
+        noised_data_II = clean_batch.clone(); noised_data_II.pos, noised_data_II.x, noised_data_II.edge_attr = noised_pos_II, noised_x_II, noised_edge_attr_II
+
+        predictions_II = model(noised_data_II, t2, target_node_mask_II, target_edge_mask)
+
+        lossII_a = calculate_atom_type_loss(predictions_II['atom_type_logits'], clean_batch.x[target_node_mask_II].argmax(dim=-1),  args.lambda_aux)
+        lossII_r = calculate_coordinate_loss_wrapper(predictions_II['predicted_r0'], noise2[target_node_mask_II], noised_pos_target, t2_per_node[target_node_mask_II], scheduler, 'delta')
+        lossII_b = calculate_bond_type_loss(predictions_II['bond_logits'], clean_batch.edge_attr[target_edge_mask].argmax(dim=-1), args.lambda_aux)
+        loss_II = args.w_a * lossII_a + args.w_r * lossII_r + args.w_b * lossII_b
+
+        # --- 总验证损失 ---
+        total_loss = scheduler.T1 * loss_I + scheduler.T2 * loss_II
+
+        reward = (-total_loss - log_prob_orders).detach()  # 奖励必须从计算图中分离，不带梯度
+
+        # 策略损失 L_policy = -R(π) * log q_φ(π|G)
+        loss_s_model = (-reward * log_prob_orders).mean()
         
         total_val_loss += total_loss.item()
         total_s_val_loss_epoch += loss_s_model.item()
@@ -401,6 +428,8 @@ def train(
     best_val_loss = float('inf')
     best_epoch = 0
 
+    accumulation_steps = args.accumulation_steps
+
     logger.info(f"模型检查点将保存在: {args.checkpoints_dir}")
     logger.info("开始训练...")
 
@@ -417,233 +446,234 @@ def train(
         
         # 创建数据迭代器
         pbar_train = tqdm(train_loader, desc=f"Epoch {epoch}")
+
+        optimizer_model.zero_grad()
+        optimizer_s_model.zero_grad()
         
         for step, (batch_non_fc, batch_fc) in enumerate(pbar_train):
             batch_fc = batch_fc.to(device)
             batch_non_fc = batch_non_fc.to(device) # 将当前批次的数据（包括所有张量，如 pos, x, edge_index 等）一次性地移动到之前定义好的目标设备 device 上
-             
-            # 在每个 step 开始时清零梯度
-            optimizer_model.zero_grad()
-            optimizer_s_model.zero_grad()
+
             with torch.autograd.set_detect_anomaly(True):
 
                 # --- 使用 amp_autocast 上下文管理器 ---
                 # 将所有的前向传播和损失计算包裹在内
-                with amp_autocast():
+                # with amp_autocast():
 
-                    # 将非全连接的 batch 送入排序网络，返回排序和损失
-                    orders, log_prob_orders = s_model(batch_non_fc)
+                # 将非全连接的 batch 送入排序网络，返回排序和损失
+                orders, log_prob_orders = s_model(batch_non_fc)
 
-                    # 得到切分后的子图片段
-                    clean_batch = seg(batch_fc, orders, subgraph_generator_fn)
+                # 得到切分后的子图片段
+                clean_batch = seg(batch_fc, orders, subgraph_generator_fn)
 
-                    # --- 0. 准备工作 ---
-                    num_graphs = clean_batch.num_graphs # 批次中包含的独立图的数量（等于 batch_size）。用于采样图级别的变量，如时间步 t
-                    num_nodes = clean_batch.num_nodes #  批次中所有图的节点总数
-                    num_edges = clean_batch.num_edges # 批次中所有图的边总数
+                # --- 0. 准备工作 ---
+                num_graphs = clean_batch.num_graphs # 批次中包含的独立图的数量（等于 batch_size）。用于采样图级别的变量，如时间步 t
+                num_nodes = clean_batch.num_nodes #  批次中所有图的节点总数
+                num_edges = clean_batch.num_edges # 批次中所有图的边总数
 
-                    # a. 坐标缩放
-                    scaled_pos = scale_to_unit_sphere(clean_batch.pos, clean_batch.batch)
+                # a. 坐标缩放
+                scaled_pos = scale_to_unit_sphere(clean_batch.pos, clean_batch.batch)
 
-                    # b. 采样时间步和高斯噪声
-                    # 为批次中的每一个图随机采样一个时间步 t1
-                    # t1 是一个形状为 [batch_size] 的张量，例如 tensor([18, 98, 21, ...])
-                    t1 = torch.randint(1, scheduler.T1 + 1, (num_graphs,), device=device)
-                    t2 = torch.randint(1, scheduler.T2 + 1, (num_graphs,), device=device)
-                    # noise1 是一个形状为 [N, 3] 的张量，其中每个元素都是一个随机数（均值为0，方差为1）。noise1[i] 就是要加到第 i 个原子坐标上的噪声向量。
-                    noise1 = torch.randn_like(scaled_pos)
-                    noise2 = torch.randn_like(scaled_pos)
+                # b. 采样时间步和高斯噪声
+                # 为批次中的每一个图随机采样一个时间步 t1
+                # t1 是一个形状为 [batch_size] 的张量，例如 tensor([18, 98, 21, ...])
+                t1 = torch.randint(1, scheduler.T1 + 1, (num_graphs,), device=device)
+                t2 = torch.randint(1, scheduler.T2 + 1, (num_graphs,), device=device)
+                # noise1 是一个形状为 [N, 3] 的张量，其中每个元素都是一个随机数（均值为0，方差为1）。noise1[i] 就是要加到第 i 个原子坐标上的噪声向量。
+                noise1 = torch.randn_like(scaled_pos)
+                noise2 = torch.randn_like(scaled_pos)
 
-                    # c. 将 per-graph 的时间步扩展到 per-node 和 per-edge
-                    # t1: 一个形状为 [num_graphs] 的张量。假设 batch_size=4，t1可能长这样：tensor([18, 98, 21, 76])
-                    # clean_batch.batch: 一个形状为 [num_nodes] 的张量，记录了每个节点属于哪个图。
-                    # 它可能长这样（假设4个图分别有3, 2, 4, 3个节点）：tensor([0, 0, 0, 1, 1, 2, 2, 2, 2, 3, 3, 3])。
-                    t1_per_node = t1[clean_batch.batch] # 形状为[num_nodes]
-                    t1_per_edge = t1[clean_batch.batch[clean_batch.edge_index[0]]] # 形状为[num_edges]
-
-
-                    # --- 策略 I: 全局去噪 (生成噪声图 Ⅰ) ---
-
-                    # a. 加噪坐标
-                    noised_pos_I = scheduler.q_sample(scaled_pos, t1_per_node, noise1, schedule_type='alpha')
-
-                    # b. 加噪原子类型
-                    noised_x_I = noise_discrete_features(clean_batch.x, scheduler.Q_bar_alpha_a, t1_per_node)
-
-                    # c. 加噪边属性
-                    noised_edge_attr_I = noise_discrete_features(clean_batch.edge_attr, scheduler.Q_bar_alpha_b, t1_per_edge)
-
-                    # d. 构建加噪后的数据对象 Ⅰ
-                    # 复制干净的数据，更改加噪的部分
-                    noised_data_I = clean_batch.clone()
-                    noised_data_I.pos = noised_pos_I
-                    noised_data_I.x = noised_x_I
-                    noised_data_I.edge_attr = noised_edge_attr_I
-
-                    # e. 准备模型输入
-                    # 创建一个长度为当前批次中所有原子的总数，内容全为 True 的向量。
-                    target_node_mask_I = torch.ones(num_nodes, dtype=torch.bool, device=device)
-                    # 处理并输出所有边的预测结果
-                    target_edge_mask_I = torch.ones(num_edges, dtype=torch.bool, device=device)
-
-                    # f. 模型前向传播
-                    predictions_I = model(noised_data_I, t1, target_node_mask_I, target_edge_mask_I)
-
-                    # g. 计算损失 Ⅰ
-                    lossI_a = calculate_atom_type_loss(
-                        predictions_I['atom_type_logits'],
-                        clean_batch.x.argmax(dim=-1),  # 从 One-Hot 编码的特征张量中，提取出每个项目对应的类别索引 (class index)
-                        args.lambda_aux
-                    )
-                    lossI_r = calculate_coordinate_loss_wrapper(
-                        predicted_r0=predictions_I['predicted_r0'],
-                        true_noise=noise1,
-                        r_t=noised_pos_I,
-                        t=t1_per_node,
-                        scheduler=scheduler,
-                        schedule_type='alpha'
-                    )
-                    lossI_b = calculate_bond_type_loss(
-                        pred_logits=predictions_I['bond_logits'],
-                        true_b0_indices=clean_batch.edge_attr.argmax(dim=-1),
-                        lambda_aux=args.lambda_aux
-                    )
-                    loss_I = args.w_a * lossI_a + args.w_r * lossI_r + args.w_b * lossI_b
+                # c. 将 per-graph 的时间步扩展到 per-node 和 per-edge
+                # t1: 一个形状为 [num_graphs] 的张量。假设 batch_size=4，t1可能长这样：tensor([18, 98, 21, 76])
+                # clean_batch.batch: 一个形状为 [num_nodes] 的张量，记录了每个节点属于哪个图。
+                # 它可能长这样（假设4个图分别有3, 2, 4, 3个节点）：tensor([0, 0, 0, 1, 1, 2, 2, 2, 2, 3, 3, 3])。
+                t1_per_node = t1[clean_batch.batch] # 形状为[num_nodes]
+                t1_per_edge = t1[clean_batch.batch[clean_batch.edge_index[0]]] # 形状为[num_edges]
 
 
-                    # --- 策略 II: 局部生成 (生成噪声图 Ⅱ) ---
+                # --- 策略 I: 全局去噪 (生成噪声图 Ⅰ) ---
 
-                    # a. 识别上下文和目标
-                    # 标识哪些节点是我们的预测目标
-                    target_node_mask_II = clean_batch.is_new_node.squeeze() # is_new_node 就是我们的目标mask，维度压缩为[num_nodes]
-                    target_node_mask_II = target_node_mask_II.to(torch.bool)
-                    # 标识哪些节点是上下文节点，用于对上下文节点加噪
-                    context_node_mask_II = ~target_node_mask_II
-                    # 标识哪些边是与预测目标节点相关的边
-                    # 对于第 i 条边，如果它的起点是目标节点或者它的终点是目标节点，那么它就是需要被预测的边
-                    target_edge_mask = (target_node_mask_II[clean_batch.edge_index[0]] | target_node_mask_II[clean_batch.edge_index[1]])
-                    # 用于对上下文边加噪
-                    context_edge_mask = ~target_edge_mask
+                # a. 加噪坐标
+                noised_pos_I = scheduler.q_sample(scaled_pos, t1_per_node, noise1, schedule_type='alpha')
 
-                    # b. 准备时间步 (T1 和 t2)
-                    # 创建一个与给定张量形状相同、类型相同、设备相同的新张量，并将所有元素填充为T1
-                    t_T1_per_node = torch.full_like(t1_per_node, fill_value=scheduler.T1)
-                    t_T1_per_edge = torch.full_like(t1_per_edge, fill_value=scheduler.T1)
-                    t2_per_node = t2[clean_batch.batch]
-                    t2_per_edge = t2[clean_batch.batch[clean_batch.edge_index[0]]]
+                # b. 加噪原子类型
+                noised_x_I = noise_discrete_features(clean_batch.x, scheduler.Q_bar_alpha_a, t1_per_node)
 
-                    # c. 对上下文和目标分别加噪
-                    # 坐标
-                    # 计算出所有上下文原子的加噪后坐标
-                    noised_pos_context = scheduler.q_sample(scaled_pos[context_node_mask_II], t_T1_per_node[context_node_mask_II], noise2[context_node_mask_II], 'alpha')
-                    # 计算出所有目标原子的加噪后坐标
-                    noised_pos_target = scheduler.q_sample(scaled_pos[target_node_mask_II], t2_per_node[target_node_mask_II], noise2[target_node_mask_II], 'delta')
-                    # 创建一个空的“画布”
-                    noised_pos_II = torch.zeros_like(scaled_pos)
-                    # 将计算好的上下文坐标填充到画布的相应位置
-                    noised_pos_II[context_node_mask_II] = noised_pos_context
-                    # 将计算好的目标坐标填充到画布的相应位置
-                    noised_pos_II[target_node_mask_II] = noised_pos_target
+                # c. 加噪边属性
+                noised_edge_attr_I = noise_discrete_features(clean_batch.edge_attr, scheduler.Q_bar_alpha_b, t1_per_edge)
 
-                    # 原子类型
-                    noised_x_context = noise_discrete_features(clean_batch.x[context_node_mask_II], scheduler.Q_bar_alpha_a, t_T1_per_node[context_node_mask_II])
-                    noised_x_target = noise_discrete_features(clean_batch.x[target_node_mask_II], scheduler.Q_bar_gamma_a, t2_per_node[target_node_mask_II])
-                    noised_x_II = torch.zeros_like(clean_batch.x)
-                    noised_x_II[context_node_mask_II] = noised_x_context
-                    noised_x_II[target_node_mask_II] = noised_x_target
+                # d. 构建加噪后的数据对象 Ⅰ
+                # 复制干净的数据，更改加噪的部分
+                noised_data_I = clean_batch.clone()
+                noised_data_I.pos = noised_pos_I
+                noised_data_I.x = noised_x_I
+                noised_data_I.edge_attr = noised_edge_attr_I
 
-                    # 边属性
-                    noised_edge_attr_context = noise_discrete_features(clean_batch.edge_attr[context_edge_mask], scheduler.Q_bar_alpha_b, t_T1_per_edge[context_edge_mask])
-                    noised_edge_attr_target = noise_discrete_features(clean_batch.edge_attr[target_edge_mask], scheduler.Q_bar_gamma_b, t2_per_edge[target_edge_mask])
-                    noised_edge_attr_II = torch.zeros_like(clean_batch.edge_attr)
-                    noised_edge_attr_II[context_edge_mask] = noised_edge_attr_context
-                    noised_edge_attr_II[target_edge_mask] = noised_edge_attr_target
+                # e. 准备模型输入
+                # 创建一个长度为当前批次中所有原子的总数，内容全为 True 的向量。
+                target_node_mask_I = torch.ones(num_nodes, dtype=torch.bool, device=device)
+                # 处理并输出所有边的预测结果
+                target_edge_mask_I = torch.ones(num_edges, dtype=torch.bool, device=device)
 
-                    # d. 构建加噪后的数据对象 Ⅱ
-                    noised_data_II = clean_batch.clone()
-                    noised_data_II.pos = noised_pos_II
-                    noised_data_II.x = noised_x_II
-                    noised_data_II.edge_attr = noised_edge_attr_II
+                # f. 模型前向传播
+                predictions_I = model(noised_data_I, t1, target_node_mask_I, target_edge_mask_I)
+
+                # g. 计算损失 Ⅰ
+                lossI_a = calculate_atom_type_loss(
+                    predictions_I['atom_type_logits'],
+                    clean_batch.x.argmax(dim=-1),  # 从 One-Hot 编码的特征张量中，提取出每个项目对应的类别索引 (class index)
+                    args.lambda_aux
+                )
+                lossI_r = calculate_coordinate_loss_wrapper(
+                    predicted_noise=predictions_I['predicted_r0'],
+                    true_noise=noise1,
+                    r_t=noised_pos_I,
+                    t=t1_per_node,
+                    scheduler=scheduler,
+                    schedule_type='alpha'
+                )
+                lossI_b = calculate_bond_type_loss(
+                    pred_logits=predictions_I['bond_logits'],
+                    true_b0_indices=clean_batch.edge_attr.argmax(dim=-1),
+                    lambda_aux=args.lambda_aux
+                )
+                loss_I = args.w_a * lossI_a + args.w_r * lossI_r + args.w_b * lossI_b
 
 
-                    # f. 模型前向传播 (注意时间步传入的是 t2)
-                    predictions_II = model(noised_data_II, t2, target_node_mask_II, target_edge_mask)
+                # --- 策略 II: 局部生成 (生成噪声图 Ⅱ) ---
 
-                    # g. 计算损失 Ⅱ
-                    # 注意：这里的真实标签和噪声都需要根据 mask 进行筛选
-                    lossII_a = calculate_atom_type_loss(
-                        predictions_II['atom_type_logits'],
-                        clean_batch.x[target_node_mask_II].argmax(dim=-1),
-                        args.lambda_aux
-                    )
-                    lossII_r = calculate_coordinate_loss_wrapper(
-                        predicted_r0=predictions_II['predicted_r0'],
-                        true_noise=noise2[target_node_mask_II],
-                        r_t=noised_pos_target,
-                        t=t2_per_node[target_node_mask_II],
-                        scheduler=scheduler,
-                        schedule_type='delta'
-                    )
-                    lossII_b = calculate_bond_type_loss(
-                        pred_logits=predictions_II['bond_logits'],
-                        true_b0_indices=clean_batch.edge_attr[target_edge_mask].argmax(dim=-1),
-                        lambda_aux=args.lambda_aux
-                    )
-                    loss_II = args.w_a * lossII_a + args.w_r * lossII_r + args.w_b * lossII_b
+                # a. 识别上下文和目标
+                # 标识哪些节点是我们的预测目标
+                target_node_mask_II = clean_batch.is_new_node.squeeze() # is_new_node 就是我们的目标mask，维度压缩为[num_nodes]
+                target_node_mask_II = target_node_mask_II.to(torch.bool)
+                # 标识哪些节点是上下文节点，用于对上下文节点加噪
+                context_node_mask_II = ~target_node_mask_II
+                # 标识哪些边是与预测目标节点相关的边
+                # 对于第 i 条边，如果它的起点是目标节点或者它的终点是目标节点，那么它就是需要被预测的边
+                target_edge_mask = (target_node_mask_II[clean_batch.edge_index[0]] | target_node_mask_II[clean_batch.edge_index[1]])
+                # 用于对上下文边加噪
+                context_edge_mask = ~target_edge_mask
+
+                # b. 准备时间步 (T1 和 t2)
+                # 创建一个与给定张量形状相同、类型相同、设备相同的新张量，并将所有元素填充为T1
+                t_T1_per_node = torch.full_like(t1_per_node, fill_value=scheduler.T1)
+                t_T1_per_edge = torch.full_like(t1_per_edge, fill_value=scheduler.T1)
+                t2_per_node = t2[clean_batch.batch]
+                t2_per_edge = t2[clean_batch.batch[clean_batch.edge_index[0]]]
+
+                # c. 对上下文和目标分别加噪
+                # 坐标
+                # 计算出所有上下文原子的加噪后坐标
+                noised_pos_context = scheduler.q_sample(scaled_pos[context_node_mask_II], t_T1_per_node[context_node_mask_II], noise2[context_node_mask_II], 'alpha')
+                # 计算出所有目标原子的加噪后坐标
+                noised_pos_target = scheduler.q_sample(scaled_pos[target_node_mask_II], t2_per_node[target_node_mask_II], noise2[target_node_mask_II], 'delta')
+                # 创建一个空的“画布”
+                noised_pos_II = torch.zeros_like(scaled_pos)
+                # 将计算好的上下文坐标填充到画布的相应位置
+                noised_pos_II[context_node_mask_II] = noised_pos_context
+                # 将计算好的目标坐标填充到画布的相应位置
+                noised_pos_II[target_node_mask_II] = noised_pos_target
+
+                # 原子类型
+                noised_x_context = noise_discrete_features(clean_batch.x[context_node_mask_II], scheduler.Q_bar_alpha_a, t_T1_per_node[context_node_mask_II])
+                noised_x_target = noise_discrete_features(clean_batch.x[target_node_mask_II], scheduler.Q_bar_gamma_a, t2_per_node[target_node_mask_II])
+                noised_x_II = torch.zeros_like(clean_batch.x)
+                noised_x_II[context_node_mask_II] = noised_x_context
+                noised_x_II[target_node_mask_II] = noised_x_target
+
+                # 边属性
+                noised_edge_attr_context = noise_discrete_features(clean_batch.edge_attr[context_edge_mask], scheduler.Q_bar_alpha_b, t_T1_per_edge[context_edge_mask])
+                noised_edge_attr_target = noise_discrete_features(clean_batch.edge_attr[target_edge_mask], scheduler.Q_bar_gamma_b, t2_per_edge[target_edge_mask])
+                noised_edge_attr_II = torch.zeros_like(clean_batch.edge_attr)
+                noised_edge_attr_II[context_edge_mask] = noised_edge_attr_context
+                noised_edge_attr_II[target_edge_mask] = noised_edge_attr_target
+
+                # d. 构建加噪后的数据对象 Ⅱ
+                noised_data_II = clean_batch.clone()
+                noised_data_II.pos = noised_pos_II
+                noised_data_II.x = noised_x_II
+                noised_data_II.edge_attr = noised_edge_attr_II
 
 
-                    # --- 总损失与反向传播 ---
-                    total_loss = scheduler.T1 * loss_I + scheduler.T2 * loss_II
+                # f. 模型前向传播 (注意时间步传入的是 t2)
+                predictions_II = model(noised_data_II, t2, target_node_mask_II, target_edge_mask)
 
-                     # 根据 OM 论文, 奖励 R(π) = log p_θ(G|π) - log q_φ(π|G)
-                    # log p_θ(G|π) 由生成模型的负损失 -total_loss 近似
-                    # log q_φ(π|G) 是排序网络输出的 log_prob_orders
-                    # 我们希望最大化 E[R(π)], 所以将 R(π) 作为 REINFORCE 的奖励
-                    reward = (-total_loss - log_prob_orders).detach()  # 奖励必须从计算图中分离，不带梯度
+                # g. 计算损失 Ⅱ
+                # 注意：这里的真实标签和噪声都需要根据 mask 进行筛选
+                lossII_a = calculate_atom_type_loss(
+                    predictions_II['atom_type_logits'],
+                    clean_batch.x[target_node_mask_II].argmax(dim=-1),
+                    args.lambda_aux
+                )
+                lossII_r = calculate_coordinate_loss_wrapper(
+                    predicted_noise=predictions_II['predicted_r0'],
+                    true_noise=noise2[target_node_mask_II],
+                    r_t=noised_pos_target,
+                    t=t2_per_node[target_node_mask_II],
+                    scheduler=scheduler,
+                    schedule_type='delta'
+                )
+                lossII_b = calculate_bond_type_loss(
+                    pred_logits=predictions_II['bond_logits'],
+                    true_b0_indices=clean_batch.edge_attr[target_edge_mask].argmax(dim=-1),
+                    lambda_aux=args.lambda_aux
+                )
+                loss_II = args.w_a * lossII_a + args.w_r * lossII_r + args.w_b * lossII_b
 
-                    # 策略损失 L_policy = -R(π) * log q_φ(π|G)
-                    loss_s_model = (-reward * log_prob_orders).mean()
 
+                # --- 总损失与反向传播 ---
+                total_loss = scheduler.T1 * loss_I + scheduler.T2 * loss_II
 
-                # --- 4. 反向传播与参数更新 ---
-                # 使用 loss_scaler 分别缩放两个模型的损失
-                # backward() 会累加梯度，而我们已经在 step 开始时清零了梯度
+                 # 根据 OM 论文, 奖励 R(π) = log p_θ(G|π) - log q_φ(π|G)
+                # log p_θ(G|π) 由生成模型的负损失 -total_loss 近似
+                # log q_φ(π|G) 是排序网络输出的 log_prob_orders
+                # 我们希望最大化 E[R(π)], 所以将 R(π) 作为 REINFORCE 的奖励
+                reward = (-total_loss - log_prob_orders).detach()  # 奖励必须从计算图中分离，不带梯度
 
+                # 策略损失 L_policy = -R(π) * log q_φ(π|G)
+                loss_s_model = (-reward * log_prob_orders).mean()
+
+                total_loss_scaled = total_loss / accumulation_steps
+                loss_s_model_scaled = loss_s_model / accumulation_steps
+
+                # --- [反向传播与参数更新逻辑修改] ---
                 if loss_scaler is not None:
                     # --- AMP 启用模式 ---
-                    # 1. 分别对两个损失进行缩放和反向传播
-                    loss_scaler._scaler.scale(total_loss).backward()
-                    loss_scaler._scaler.scale(loss_s_model).backward()
-
-                    # 2. 对 model 的梯度进行反缩放，然后裁剪
-                    loss_scaler._scaler.unscale_(optimizer_model)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-
-                    # 3. 对 s_model 的梯度进行反缩放，然后裁剪
-                    loss_scaler._scaler.unscale_(optimizer_s_model)
-                    torch.nn.utils.clip_grad_norm_(s_model.parameters(), max_norm=1.0)
-
-                    # 4. 更新两个优化器
-                    loss_scaler._scaler.step(optimizer_model)
-                    loss_scaler._scaler.step(optimizer_s_model)
-
-                    # 5. 更新缩放器
-                    loss_scaler._scaler.update()
+                    loss_scaler._scaler.scale(total_loss_scaled).backward(
+                        retain_graph=True)  # retain_graph=True 确保计算图不被立即释放
+                    loss_scaler._scaler.scale(loss_s_model_scaled).backward()
                 else:
-                    # --- AMP 禁用模式 (标准 float32 训练) ---
-                    # 1. 直接对两个损失进行反向传播
-                    total_loss.backward()
-                    loss_s_model.backward()
+                    # --- AMP 禁用模式 ---
+                    total_loss_scaled.backward(retain_graph=True)  # retain_graph=True 确保第一个loss的计算图可以被第二个loss复用
+                    loss_s_model_scaled.backward()
 
-                    # 2. 直接对两个模型的梯度进行裁剪
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                    torch.nn.utils.clip_grad_norm_(s_model.parameters(), max_norm=1.0)
+                # [新] 只有当累积了足够多的梯度后，才执行参数更新
+                if (step + 1) % accumulation_steps == 0:
+                    # --- 对两个模型都进行梯度裁剪和更新 ---
+                    if loss_scaler is not None:
+                        # AMP 模式
+                        loss_scaler._scaler.unscale_(optimizer_model)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
-                    # 3. 更新两个优化器
-                    optimizer_model.step()
-                    optimizer_s_model.step()
+                        loss_scaler._scaler.unscale_(optimizer_s_model)
+                        torch.nn.utils.clip_grad_norm_(s_model.parameters(), max_norm=1.0)
 
-            
+                        loss_scaler._scaler.step(optimizer_model)
+                        loss_scaler._scaler.step(optimizer_s_model)
+
+                        loss_scaler._scaler.update()
+                    else:
+                        # 非 AMP 模式
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                        torch.nn.utils.clip_grad_norm_(s_model.parameters(), max_norm=1.0)
+
+                        optimizer_model.step()
+                        optimizer_s_model.step()
+
+                    # [新] 更新完成后，清空两个优化器的梯度，为下一个累积周期做准备
+                    optimizer_model.zero_grad()
+                    optimizer_s_model.zero_grad()
+
             total_loss_epoch += total_loss.item()
             total_s_loss_epoch += loss_s_model.item()
             pbar_train.set_postfix({

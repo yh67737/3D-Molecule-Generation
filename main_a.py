@@ -244,9 +244,10 @@ def get_args_parser():
     parser.add_argument('--data_path_2', type=str, default='./prepared_data/small_fully_connected.pt', help='Path to dataset 2 (for E-DiT).')
     parser.add_argument('--data_split_path', type=str, default='./data_splits', help='Directory to save/load data split indices.')
     parser.add_argument('--val_split_percentage', type=float, default=0.05, help='Percentage of data to use for validation.')
-    parser.add_argument('--train_batch_size', type=int, default=8)
-    parser.add_argument('--val_batch_size', type=int, default=256)
+    parser.add_argument('--train_batch_size', type=int, default=32)
+    parser.add_argument('--val_batch_size', type=int, default=32)
     parser.add_argument('--num_workers', type=int, default=4)
+    parser.add_argument('--accumulation_steps', type=int, default=8)
 
     # --- 模型参数: 排序网络 (SortingNetwork) ---
     parser.add_argument('--sorting_num_atom_features', type=int, default=6,
@@ -263,22 +264,22 @@ def get_args_parser():
     # E-DiT参数
     # --- 模型架构参数 (Model Architecture) ---
     g_arch = parser.add_argument_group('Architecture')
-    g_arch.add_argument('--num_blocks', type=int, default=6, help='Number of E-DiT blocks.')
+    g_arch.add_argument('--num_blocks', type=int, default=4, help='Number of E-DiT blocks.')
     g_arch.add_argument('--num_heads', type=int, default=4, help='Number of attention heads.')
     g_arch.add_argument('--norm_layer', type=str, default='layer', help='Type of normalization layer (e.g., "layer").')
     g_arch.add_argument('--time_embed_dim', type=int, default=128, help='Dimension of timestep embedding.')
 
     # --- Irreps 参数 (Irreps Definitions) ---
     g_irreps = parser.add_argument_group('Irreps')
-    g_irreps.add_argument('--irreps_node_hidden', type=str, default='128x0e+64x1o+32x2e',
+    g_irreps.add_argument('--irreps_node_hidden', type=str, default='64x0e+32x1o+16x2e',
                           help='Hidden node feature irreps.')
-    g_irreps.add_argument('--irreps_edge', type=str, default='128x0e+64x1o+32x2e', help='Hidden edge feature irreps.')
+    g_irreps.add_argument('--irreps_edge', type=str, default='64x0e+32x1o+16x2e', help='Hidden edge feature irreps.')
     g_irreps.add_argument('--irreps_node_attr', type=str, default='6x0e', help='Node attribute (atom type) irreps.')
     g_irreps.add_argument('--irreps_edge_attr_type', type=str, default='5x0e',
                           help='Edge attribute (bond type) irreps.')
     g_irreps.add_argument('--irreps_sh', type=str, default='1x0e+1x1e+1x2e', help='Spherical harmonics irreps.')
     g_irreps.add_argument('--irreps_head', type=str, default='32x0e+16x1o+8x2e', help='Single attention head irreps.')
-    g_irreps.add_argument('--irreps_mlp_mid', type=str, default='384x0e+192x1o+96x2e',
+    g_irreps.add_argument('--irreps_mlp_mid', type=str, default='128x0e+64x1o+32x2e',
                           help='Irreps for the middle layer of FFN.')
     g_irreps.add_argument('--irreps_pre_attn', type=str, default=None,
                           help='Optional irreps for pre-attention linear layer.')
@@ -292,7 +293,7 @@ def get_args_parser():
     g_embed.add_argument('--bond_embedding_dim', type=int, default=64, help='Hidden dimension in edge embedding MLP.')
     g_embed.add_argument('--edge_update_hidden_dim', type=int, default=64,
                          help='Hidden dimension in EdgeUpdateNetwork MLP.')
-    g_embed.add_argument('--num_rbf', type=int, default=128, help='Number of radial basis functions.')
+    g_embed.add_argument('--num_rbf', type=int, default=64, help='Number of radial basis functions.')
     g_embed.add_argument('--rbf_cutoff', type=float, default=5.0, help='Cutoff radius for RBF.')
     g_embed.add_argument('--fc_neurons', type=int, nargs='+', default=[64, 64],
                          help='List of hidden layer sizes for FC network in attention.')
@@ -326,7 +327,7 @@ def get_args_parser():
     parser.add_argument('--warmup_epochs', type=int, default=10, help='Number of warmup epochs for LR scheduler.')
     
     # AMP
-    parser.add_argument('--amp', action='store_true', help='Enable automatic mixed precision training.')
+    parser.add_argument('--amp', action='store_false', help='Enable automatic mixed precision training.')
     parser.add_argument('--no-amp', action='store_false', dest='amp')
     parser.set_defaults(amp=False)
 

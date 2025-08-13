@@ -91,8 +91,8 @@ def get_args_parser():
 
     # 训练流程
     parser.add_argument('--epochs', type=int, default=500, help='Total number of training epochs')
-    parser.add_argument('--learning_rate', type=float, default=1e-4, help='Learning rate for the Adam optimizer(model)')
-    parser.add_argument('--lr_min_factor', type=float, default=0.01, 
+    parser.add_argument('--learning_rate', type=float, default=1e-7, help='Learning rate for the Adam optimizer(model)')
+    parser.add_argument('--lr_min_factor', type=float, default=0.1, 
                     help="学习率下限因子，最终学习率 = lr_min_factor × 初始学习率")
     # 损失权重
     parser.add_argument('--w_a', type=float, default=1.0, help='Weight for atom type loss')
@@ -124,30 +124,31 @@ def get_args_parser():
     parser.add_argument('--fragment_data_dir', type=str, default='./prepared_data/gdb9_unique_subgraphs_json',
                         help='Directory containing some JSON fragment files.')  ###
     # parser.add_argument('--fragment_data_dir', type=str, default='./prepared_data/gdb9_bfs_fragments_json', help='Directory containing the JSON fragment files.')
-    parser.add_argument('--val_split_percentage', type=float, default=0.05, help='Percentage of data to use for validation.')
-    parser.add_argument('--train_batch_size', type=int, default=8)
-    parser.add_argument('--val_batch_size', type=int, default=256)
+    parser.add_argument('--val_split_percentage', type=float, default=0.1, help='Percentage of data to use for validation.')
+    parser.add_argument('--train_batch_size', type=int, default=32)
+    parser.add_argument('--val_batch_size', type=int, default=32)
     parser.add_argument('--num_workers', type=int, default=4)
+    parser.add_argument('--accumulation_steps', type=int, default=8)
 
     # E-DiT参数
     # --- 模型架构参数 (Model Architecture) ---
     g_arch = parser.add_argument_group('Architecture')
-    g_arch.add_argument('--num_blocks', type=int, default=6, help='Number of E-DiT blocks.')
+    g_arch.add_argument('--num_blocks', type=int, default=4, help='Number of E-DiT blocks.')
     g_arch.add_argument('--num_heads', type=int, default=4, help='Number of attention heads.')
     g_arch.add_argument('--norm_layer', type=str, default='layer', help='Type of normalization layer (e.g., "layer").')
-    g_arch.add_argument('--time_embed_dim', type=int, default=128, help='Dimension of timestep embedding.')
+    g_arch.add_argument('--time_embed_dim', type=int, default=64, help='Dimension of timestep embedding.')
 
     # --- Irreps 参数 (Irreps Definitions) ---
     g_irreps = parser.add_argument_group('Irreps')
-    g_irreps.add_argument('--irreps_node_hidden', type=str, default='128x0e+64x1o+32x2e',
+    g_irreps.add_argument('--irreps_node_hidden', type=str, default='64x0e+32x1o+16x2e',
                           help='Hidden node feature irreps.')
-    g_irreps.add_argument('--irreps_edge', type=str, default='128x0e+64x1o+32x2e', help='Hidden edge feature irreps.')
+    g_irreps.add_argument('--irreps_edge', type=str, default='64x0e+32x1o+16x2e', help='Hidden edge feature irreps.')
     g_irreps.add_argument('--irreps_node_attr', type=str, default='6x0e', help='Node attribute (atom type) irreps.')
     g_irreps.add_argument('--irreps_edge_attr_type', type=str, default='5x0e',
                           help='Edge attribute (bond type) irreps.')
     g_irreps.add_argument('--irreps_sh', type=str, default='1x0e+1x1e+1x2e', help='Spherical harmonics irreps.')
-    g_irreps.add_argument('--irreps_head', type=str, default='32x0e+16x1o+8x2e', help='Single attention head irreps.')
-    g_irreps.add_argument('--irreps_mlp_mid', type=str, default='384x0e+192x1o+96x2e',
+    g_irreps.add_argument('--irreps_head', type=str, default='64x0e+32x1o+16x2e', help='Single attention head irreps.')
+    g_irreps.add_argument('--irreps_mlp_mid', type=str, default='128x0e+64x1o+32x2e',
                           help='Irreps for the middle layer of FFN.')
     g_irreps.add_argument('--irreps_pre_attn', type=str, default=None,
                           help='Optional irreps for pre-attention linear layer.')
@@ -165,7 +166,7 @@ def get_args_parser():
     g_embed.add_argument('--rbf_cutoff', type=float, default=5.0, help='Cutoff radius for RBF.')
     g_embed.add_argument('--fc_neurons', type=int, nargs='+', default=[64, 64],
                          help='List of hidden layer sizes for FC network in attention.')
-    g_embed.add_argument('--avg_degree', type=float, default=10.0, help='Average degree of nodes in the dataset.')
+    g_embed.add_argument('--avg_degree', type=float, default=9.21, help='Average degree of nodes in the dataset.')
 
     # --- 注意力机制参数 (Attention Mechanism) ---
     g_attn = parser.add_argument_group('Attention')
@@ -176,7 +177,7 @@ def get_args_parser():
 
     # --- 输出头参数 (Output Head) ---
     g_output = parser.add_argument_group('OutputHead')
-    g_output.add_argument('--hidden_dim', type=int, default=128,
+    g_output.add_argument('--hidden_dim', type=int, default=64,
                           help='Hidden dimension for the final MLP in output heads.')
 
     # --- 训练和正则化 (Training & Regularization) ---
@@ -197,7 +198,7 @@ def get_args_parser():
     # AMP
     parser.add_argument('--amp', action='store_true', help='Enable automatic mixed precision training.')
     parser.add_argument('--no-amp', action='store_false', dest='amp')
-    parser.set_defaults(amp=True)
+    parser.set_defaults(amp=False)
 
     # 数据统计计算
     parser.add_argument('--compute_stats', action='store_true',
