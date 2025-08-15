@@ -211,8 +211,8 @@ def get_args_parser():
 
     # 训练流程
     parser.add_argument('--epochs', type=int, default=500, help='Total number of training epochs')
-    parser.add_argument('--learning_rate', type=float, default=1e-4, help='Learning rate for the Adam optimizer(model)')
-    parser.add_argument('--s_learning_rate', type=float, default=1e-4, help='Learning rate for the Adam optimizer(s_model)')
+    parser.add_argument('--learning_rate', type=float, default=1e-5, help='Learning rate for the Adam optimizer(model)')
+    parser.add_argument('--s_learning_rate', type=float, default=1e-5, help='Learning rate for the Adam optimizer(s_model)')
     parser.add_argument('--lr_min_factor', type=float, default=0.01, 
                     help="学习率下限因子，最终学习率 = lr_min_factor × 初始学习率")
     # 损失权重
@@ -278,7 +278,7 @@ def get_args_parser():
     g_irreps.add_argument('--irreps_edge_attr_type', type=str, default='5x0e',
                           help='Edge attribute (bond type) irreps.')
     g_irreps.add_argument('--irreps_sh', type=str, default='1x0e+1x1e+1x2e', help='Spherical harmonics irreps.')
-    g_irreps.add_argument('--irreps_head', type=str, default='32x0e+16x1o+8x2e', help='Single attention head irreps.')
+    g_irreps.add_argument('--irreps_head', type=str, default='64x0e+32x1o+16x2e', help='Single attention head irreps.')
     g_irreps.add_argument('--irreps_mlp_mid', type=str, default='128x0e+64x1o+32x2e',
                           help='Irreps for the middle layer of FFN.')
     g_irreps.add_argument('--irreps_pre_attn', type=str, default=None,

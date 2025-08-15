@@ -91,7 +91,7 @@ def get_args_parser():
 
     # 训练流程
     parser.add_argument('--epochs', type=int, default=500, help='Total number of training epochs')
-    parser.add_argument('--learning_rate', type=float, default=1e-7, help='Learning rate for the Adam optimizer(model)')
+    parser.add_argument('--learning_rate', type=float, default=1e-5, help='Learning rate for the Adam optimizer(model)')
     parser.add_argument('--lr_min_factor', type=float, default=0.1, 
                     help="学习率下限因子，最终学习率 = lr_min_factor × 初始学习率")
     # 损失权重

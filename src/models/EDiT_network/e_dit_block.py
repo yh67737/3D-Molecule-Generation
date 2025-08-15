@@ -118,11 +118,11 @@ class E_DiT_Block(torch.nn.Module):
 
         # 共享路径失活模块：该模块模块无参数、无状态，创建一次和两个效果一样
         self.drop_path = GraphDropPath(drop_path_rate) if drop_path_rate > 0. else None
-        self.edge_updater_gate = torch.nn.Parameter(torch.tensor([0.0]))
-        self.edge_ffn_gate = torch.nn.Parameter(torch.tensor([0.0]))
+        self.edge_updater_gate = torch.nn.Parameter(torch.tensor([1e-3]))
+        self.edge_ffn_gate = torch.nn.Parameter(torch.tensor([1e-3]))
 
-        self.node_ga_gate = torch.nn.Parameter(torch.tensor([0.0]))
-        self.node_ffn_gate = torch.nn.Parameter(torch.tensor([0.0]))
+        self.node_ga_gate = torch.nn.Parameter(torch.tensor([1e-3]))
+        self.node_ffn_gate = torch.nn.Parameter(torch.tensor([1e-3]))
 
     def forward(self, node_input, node_attr, edge_src, edge_dst, edge_attr, edge_scalars,
                 edge_input, edge_attr_type, edge_index, t, batch, **kwargs):

@@ -36,3 +36,6 @@ build/
 *.pt
 *.json
 *.sdf
+
+# .whl 文件
+*.whl
