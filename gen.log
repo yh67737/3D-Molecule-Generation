@@ -1,0 +1,72 @@
+nohup: ignoring input
+
+A module that was compiled using NumPy 1.x cannot be run in
+NumPy 2.1.2 as it may crash. To support both 1.x and 2.x
+versions of NumPy, modules must be compiled with NumPy 2.0.
+Some module may need to rebuild instead e.g. with 'pybind11>=2.12'.
+
+If you are a user of the module, the easiest solution will be to
+downgrade to 'numpy<2' or try to upgrade the affected module.
+We expect that some modules will need time to support NumPy 2.
+
+Traceback (most recent call last):  File "/root/autodl-tmp/molecular_generation_project/main_gen.py", line 14, in <module>
+    from generate_qm9 import generate_molecule
+  File "/root/autodl-tmp/molecular_generation_project/generate_qm9.py", line 3, in <module>
+    from torch_geometric.data import Data, Batch
+  File "/root/miniconda3/envs/molgen/lib/python3.10/site-packages/torch_geometric/__init__.py", line 21, in <module>
+    import torch_geometric.datasets
+  File "/root/miniconda3/envs/molgen/lib/python3.10/site-packages/torch_geometric/datasets/__init__.py", line 18, in <module>
+    from .qm9 import QM9
+  File "/root/miniconda3/envs/molgen/lib/python3.10/site-packages/torch_geometric/datasets/qm9.py", line 22, in <module>
+    conversion = torch.tensor([
+/root/miniconda3/envs/molgen/lib/python3.10/site-packages/torch_geometric/datasets/qm9.py:22: UserWarning: Failed to initialize NumPy: _ARRAY_API not found (Triggered internally at ../torch/csrc/utils/tensor_numpy.cpp:77.)
+  conversion = torch.tensor([
+[✓] 参数加载成功: ./saved_args/args_2025-08-16_12-43-43.pt
+原始模型路径 (from file): ./output/2025-08-16_01-05-51/checkpoints/checkpoint_epoch_10.pth
+✅ 模型路径已被命令行覆盖为: ./output/2025-08-16_12-43-43/checkpoints/checkpoint_epoch_100.pth
+Logger initialized. Distributed config synchronized.
+All outputs for this run will be saved to: ./output/2025-08-16_12-43-43
+Master process (rank 0) configuration:
+Namespace(output_dir='./output', args_save_dir='./saved_args', seed=42, device=device(type='cuda'), val_log_freq=5, val_thre=10, epochs=500, learning_rate=1e-05, lr_min_factor=0.1, w_a=1.0, w_r=1.0, w_b=1.0, lambda_aux=0.01, batch_ratio_val=10, T_full=1000, T1=100, T2=900, s=0.008, max_atoms=50, min_atoms=3, num_generate=100, model_ckpt='./output/2025-08-16_12-43-43/checkpoints/checkpoint_epoch_100.pth', data_split_path='./data_splits', fragment_data_dir='./prepared_data/gdb9_unique_subgraphs_json', val_split_percentage=0.1, train_batch_size=32, val_batch_size=32, num_workers=4, accumulation_steps=8, num_blocks=4, num_heads=4, norm_layer='layer', time_embed_dim=64, irreps_node_hidden='64x0e+32x1o+16x2e', irreps_edge='64x0e+32x1o+16x2e', irreps_node_attr='6x0e', irreps_edge_attr_type='5x0e', irreps_sh='1x0e+1x1e+1x2e', irreps_head='64x0e+32x1o+16x2e', irreps_mlp_mid='128x0e+64x1o+32x2e', irreps_pre_attn=None, num_atom_types=6, num_bond_types=5, node_embedding_hidden_dim=64, bond_embedding_dim=64, edge_update_hidden_dim=64, num_rbf=128, rbf_cutoff=5.0, fc_neurons=[64, 64], avg_degree=9.21, rescale_degree=False, nonlinear_message=False, hidden_dim=64, alpha_drop=0.2, proj_drop=0.0, out_drop=0.0, drop_path_rate=0.0, ring_guide_ckpt='./src/models/ring_network/ring_predictor_epoch_40.pt', optimizer='adamw', weight_decay=0.01, warmup_epochs=10, amp=False, compute_stats=False, world_size=1, dist_url='env://', local_rank=0, distributed=False, rank=0, run_dir='./output/2025-08-16_12-43-43', checkpoints_dir='./output/2025-08-16_12-43-43/checkpoints', generated_pyg_dir='./output/2025-08-16_12-43-43/generated_pyg', generated_images_dir='./output/2025-08-16_12-43-43/generated_images', tb_logs_dir='./output/2025-08-16_12-43-43/tb_logs', results_dir='./output/2025-08-16_12-43-43/results')
+CUDA device name: NVIDIA GeForce RTX 4090
+Environment initialization complete.
+Traceback (most recent call last):
+  File "/root/autodl-tmp/molecular_generation_project/main_gen.py", line 217, in <module>
+    main(args)
+  File "/root/autodl-tmp/molecular_generation_project/main_gen.py", line 119, in main
+    p_model.load_state_dict(torch.load(args.ring_guide_ckpt, map_location=args.device))
+  File "/root/miniconda3/envs/molgen/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1671, in load_state_dict
+    raise RuntimeError('Error(s) in loading state_dict for {}:\n\t{}'.format(
+RuntimeError: Error(s) in loading state_dict for RingPredictor:
+	size mismatch for conv1.lin_edge.weight: copying a param with shape torch.Size([256, 13]) from checkpoint, the shape in current model is torch.Size([256, 5]).
+	size mismatch for conv2.lin_edge.weight: copying a param with shape torch.Size([256, 13]) from checkpoint, the shape in current model is torch.Size([256, 5]).
+ERROR:torch.distributed.elastic.multiprocessing.api:failed (exitcode: 1) local_rank: 0 (pid: 1854) of binary: /root/miniconda3/envs/molgen/bin/python3.1
+Traceback (most recent call last):
+  File "/root/miniconda3/envs/molgen/bin/torchrun", line 8, in <module>
+    sys.exit(main())
+  File "/root/miniconda3/envs/molgen/lib/python3.10/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 346, in wrapper
+    return f(*args, **kwargs)
+  File "/root/miniconda3/envs/molgen/lib/python3.10/site-packages/torch/distributed/run.py", line 762, in main
+    run(args)
+  File "/root/miniconda3/envs/molgen/lib/python3.10/site-packages/torch/distributed/run.py", line 753, in run
+    elastic_launch(
+  File "/root/miniconda3/envs/molgen/lib/python3.10/site-packages/torch/distributed/launcher/api.py", line 132, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+  File "/root/miniconda3/envs/molgen/lib/python3.10/site-packages/torch/distributed/launcher/api.py", line 246, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+main_gen.py FAILED
+------------------------------------------------------------
+Failures:
+  <NO_OTHER_FAILURES>
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2025-08-17_08:31:41
+  host      : autodl-container-8ad2498c83-b3a557dd
+  rank      : 0 (local_rank: 0)
+  exitcode  : 1 (pid: 1854)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================

@@ -109,7 +109,7 @@ def evaluate(model, loader, criterion, device):
 
 if __name__ == '__main__':
     # 使用新的预处理数据集 ---
-    PREPROCESSED_DATA_DIR = 'prepared_data/autodl-tmp'
+    PREPROCESSED_DATA_DIR = 'gdb9_preprocessed_data'
     BATCH_SIZE = 1024
     LEARNING_RATE = 1e-4
     EPOCHS = 50
@@ -151,13 +151,6 @@ if __name__ == '__main__':
     NODE_FEATURE_DIM = sample_data.x.shape[1]
     EDGE_FEATURE_DIM = sample_data.edge_attr.shape[1]
     NUM_RING_CLASSES = 1
-
-    # --- 在这里加上打印语句 ---
-    print("\n--- Model Dimensionality ---")
-    print(f"Node feature dimension: {NODE_FEATURE_DIM}")
-    print(f"Edge feature dimension: {EDGE_FEATURE_DIM}") # <--- 核心打印语句
-    print("--------------------------\n")
-    # ----------------------------
 
     model = RingPredictor(NODE_FEATURE_DIM, EDGE_FEATURE_DIM, NUM_RING_CLASSES).to(device)
     criterion = torch.nn.BCEWithLogitsLoss()

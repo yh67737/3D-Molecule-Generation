@@ -7,6 +7,7 @@ from e3nn.o3 import Irreps
 from .tensor_product_rescale import LinearRS, FullyConnectedTensorProductRescale
 from .mul_head_graph_attention import get_norm_layer
 from .layer_norm import TimestepEmbedder
+from torch_scatter import scatter_sum
 
 # 从您已经创建的文件中导入核心组件
 from .input_embedding import InputEmbeddingLayer
@@ -38,12 +39,20 @@ class MultiTaskHead(nn.Module):
         )
 
         # --- (2) 坐标预测头 (Coordinate Head) ---
-        # 创建一个投影层，用于提取矢量(L=1)部分
-        irreps_vector_in = Irreps(
-            [(mul, ir) for mul, ir in self.irreps_node_in if ir.l == 1 and ir.p == -1])  # 仅保留 '1o'
-        self.node_vector_proj = LinearRS(irreps_in=self.irreps_node_in, irreps_out=irreps_vector_in)
-        self.coord_dropout = nn.Dropout(out_drop_prob)
-        self.coord_head = LinearRS(irreps_in=irreps_vector_in, irreps_out='1x1o')
+        # a. 使用张量积从两个节点的特征中计算出一个交互标量
+        self.coord_head_tp = FullyConnectedTensorProductRescale(
+            self.irreps_node_in, self.irreps_node_in, "0e"  # 输出一个标量
+        )
+
+        # b. 创建一个 MLP，它接收交互标量和原始边特征，最终输出一个权重
+        num_edge_scalar = self.irreps_edge_in.dim
+        coord_mlp_input_dim = self.coord_head_tp.irreps_out.dim + num_edge_scalar
+        self.coord_scalar_mlp = nn.Sequential(
+            nn.Linear(coord_mlp_input_dim, args.hidden_dim),
+            nn.SiLU(),
+            # 输出维度为1，因为我们只需要一个标量权重
+            nn.Linear(args.hidden_dim, 1) 
+        )
 
         # --- (3) 化学键预测头 (Bond Prediction Head) ---
         # a. 用于节点间等变交互的张量积，只取标量输出
@@ -64,6 +73,7 @@ class MultiTaskHead(nn.Module):
     def forward(self,
                 h_final: torch.Tensor,
                 e_final: torch.Tensor,
+                r_t_final: torch.Tensor,
                 target_node_mask: torch.Tensor,
                 target_edge_mask: torch.Tensor,
                 edge_index: torch.Tensor) -> dict:
@@ -82,9 +92,30 @@ class MultiTaskHead(nn.Module):
         atom_type_logits = self.atom_type_head(scalar_features)
 
         # --- 2. 坐标预测 (预测 r0_hat) ---
-        vector_features = self.node_vector_proj(target_node_features)
-        vector_features = self.coord_dropout(vector_features)
-        predicted_r0 = self.coord_head(vector_features)
+        row, col = edge_index
+        
+        # a. 计算当前加噪坐标的相对位置向量
+        coord_diff = r_t_final[row] - r_t_final[col]
+        
+        # b. 使用节点特征计算每条边上的交互标量
+        interaction_scalars = self.coord_head_tp(h_final[row], h_final[col])
+        
+        # c. 融合交互标量和原始边特征
+        coord_head_input = torch.cat([interaction_scalars, e_final], dim=-1)
+        
+        # d. 通过 MLP 得到最终的标量权重
+        weights = self.coord_scalar_mlp(coord_head_input)
+        
+        # e. 用权重缩放相对位置向量，得到每条边的噪声贡献
+        noise_contribution = coord_diff * weights
+        
+        # f. 使用 scatter_sum 聚合每个节点的总噪声贡献
+        #    注意：我们将贡献聚合到 `row` 节点上
+        predicted_r0_all_nodes = scatter_sum(noise_contribution, row, dim=0, dim_size=h_final.shape[0])
+
+        # g. 只保留目标节点的预测结果
+        predicted_r0 = predicted_r0_all_nodes[target_node_mask]
+
 
         # --- 3. 化学键预测 ---
         # a. 使用 edge_mask 筛选出需要预测的边
@@ -240,10 +271,13 @@ class E_DiT_Network(nn.Module):
         # print('h after edit:', h.shape)
         # print('e after edit:', e.shape)
 
+        r_t_final = data.pos 
+
         # 步骤4：调用多任务输出头
         predictions = self.output_heads(
             h_final=h,
             e_final=e,
+            r_t_final=r_t_final,
             target_node_mask=target_node_mask,  # 直接使用传入的原子掩码
             target_edge_mask=target_edge_mask,  # 直接使用传入的边掩码
             edge_index=data.edge_index  # 传入完整的边索引

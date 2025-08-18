@@ -116,7 +116,7 @@ def get_args_parser():
     parser.add_argument('--max_atoms', type=int, default=50, help="生成分子的最大原子数。这是主生成循环的上限。")
     parser.add_argument('--min_atoms', type=int, default=3, help="在因新原子未连接而停止生成之前，所要求的最小原子数。")
     parser.add_argument('--num_generate', type=int, default=100, help='要生成的分子数量')
-    parser.add_argument('--model_ckpt', type=str, default='./output/model.pt', help='生成模型路径') # 修改
+    parser.add_argument('--model_ckpt', type=str, default='./output/2025-08-16_12-43-43/checkpoints/checkpoint_epoch_10.pth', help='生成模型路径') # 修改
     
     # --- 数据集参数 ---
     parser.add_argument('--data_split_path', type=str, default='./data_splits',
@@ -189,7 +189,7 @@ def get_args_parser():
     g_train.add_argument('--drop_path_rate', type=float, default=0.0, help='Stochastic depth drop rate.')
     
     # 环生成指导网络
-    parser.add_argument('--ring_guide_ckpt', type=str, default='./ring_network/ring_predictor_epoch_40.pt', help='Path to pre-trained ring guidance network checkpoint.')
+    parser.add_argument('--ring_guide_ckpt', type=str, default='./src/models/ring_network/ring_predictor_epoch_40.pt', help='Path to pre-trained ring guidance network checkpoint.')
 
     parser.add_argument('--optimizer', type=str, default='adamw', help='Optimizer (e.g., adamw, sgd).')
     parser.add_argument('--weight_decay', type=float, default=1e-2, help='Weight decay for optimizer.')
@@ -223,60 +223,106 @@ def main(args):
     is_main_process = (args.rank == 0)
 
     # 检查并创建输出文件夹
-    if is_main_process: # 防止多个进程竞争IO操作
-        # 获取当前运行的时间戳
+    # if is_main_process: # 防止多个进程竞争IO操作
+    #     # 获取当前运行的时间戳
+    #     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    #     # 将run_dir作为一个新的属性，run_dir = output_dir + timestamp
+    #     args.run_dir = os.path.join(args.output_dir, timestamp) 
+    #     print(f"All outputs for this run will be saved to: {args.run_dir}")
+
+    #     # 定义所有需要创建的的子文件夹名称
+    #     sub_dirs = {
+    #         "checkpoints": os.path.join(args.run_dir, "checkpoints"), # 训练权重文件
+    #         "generated_pyg": os.path.join(args.run_dir, "generated_pyg"), # 新生成的PyG数据
+    #         "generated_images": os.path.join(args.run_dir, "generated_images"), # PyG数据画图得到的分子图
+    #         "tb_logs": os.path.join(args.run_dir, "tb_logs"), # TensorBoard 日志
+    #         "results": os.path.join(args.run_dir, "results") # 评估结果
+    #     }
+        
+    #     # 循环创建所有文件夹
+    #     for path in sub_dirs.values():
+    #         Path(path).mkdir(parents=True, exist_ok=True)
+        
+    #     # 保存配置(args)对象
+    #     # 从 run_dir中提取时间戳，确保文件名与本次运行完全对应
+    #     timestamp_from_path = os.path.basename(args.run_dir)
+        
+    #     # 构建保存文件的完整路径
+    #     args_save_filename = f"args_{timestamp_from_path}.pt"
+    #     args_save_path = os.path.join(args.args_save_dir, args_save_filename)
+        
+    #     # 保存args对象
+    #     torch.save(args, args_save_path)
+    #     print(f"Configuration for this run has been saved to: {args_save_path}")
+        
+    #     # 准备要广播的对象列表:如果不做处理，只有主进程的args对象增加了新创建的路径，其他进程的args对象则没有，后续调用时就会出错
+    #     # 包含动态生成的run_dir所有子目录路径字典
+    #     objects_to_broadcast = [args.run_dir, sub_dirs]
+    
+    # else:
+    #     # 其他进程准备好相同结构的空列表接收数据
+    #     objects_to_broadcast = [None, None]
+    
+    # # 执行广播操作(只有在分布式模式下需要广播)
+    # if args.distributed:
+    #     # broadcast_object_list会将src=0(主进程)的列表内容发送给所有其他进程
+    #     torch.distributed.broadcast_object_list(objects_to_broadcast, src=0)
+    
+    # # 所有进程用广播来的数据更新自己的配置
+    # # 主进程已经有这些数据了，但为了代码统一，可以都执行
+    # run_dir_synced, sub_dirs_synced = objects_to_broadcast
+    
+    # args.run_dir = run_dir_synced
+    # for key, path in sub_dirs_synced.items():
+    #     setattr(args, f"{key}_dir", path)
+
+    # # 设置屏障:确保所有进程都执行完前面的所有步骤后(参数更新)一起进入下一个阶段，防止时序问题
+    # if args.distributed:
+    #     torch.distributed.barrier()
+
+    if is_main_process:
+        # 1. 创建 run_dir
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        # 将run_dir作为一个新的属性，run_dir = output_dir + timestamp
         args.run_dir = os.path.join(args.output_dir, timestamp) 
         print(f"All outputs for this run will be saved to: {args.run_dir}")
 
-        # 定义所有需要创建的的子文件夹名称
+        # 2. 定义并创建子目录
         sub_dirs = {
-            "checkpoints": os.path.join(args.run_dir, "checkpoints"), # 训练权重文件
-            "generated_pyg": os.path.join(args.run_dir, "generated_pyg"), # 新生成的PyG数据
-            "generated_images": os.path.join(args.run_dir, "generated_images"), # PyG数据画图得到的分子图
-            "tb_logs": os.path.join(args.run_dir, "tb_logs"), # TensorBoard 日志
-            "results": os.path.join(args.run_dir, "results") # 评估结果
+            "checkpoints": os.path.join(args.run_dir, "checkpoints"),
+            "generated_pyg": os.path.join(args.run_dir, "generated_pyg"),
+            "generated_images": os.path.join(args.run_dir, "generated_images"),
+            "tb_logs": os.path.join(args.run_dir, "tb_logs"),
+            "results": os.path.join(args.run_dir, "results")
         }
-        
-        # 循环创建所有文件夹
         for path in sub_dirs.values():
             Path(path).mkdir(parents=True, exist_ok=True)
-        
-        # 保存配置(args)对象
-        # 从 run_dir中提取时间戳，确保文件名与本次运行完全对应
+    
+        # --- 关键修改：在这里提前将 _dir 属性添加到 args 对象 ---
+        for key, path in sub_dirs.items():
+            setattr(args, f"{key}_dir", path)
+    
+        # 3. 保存已经包含了所有 _dir 属性的 args 对象
         timestamp_from_path = os.path.basename(args.run_dir)
-        
-        # 构建保存文件的完整路径
         args_save_filename = f"args_{timestamp_from_path}.pt"
         args_save_path = os.path.join(args.args_save_dir, args_save_filename)
-        
-        # 保存args对象
         torch.save(args, args_save_path)
         print(f"Configuration for this run has been saved to: {args_save_path}")
         
-        # 准备要广播的对象列表:如果不做处理，只有主进程的args对象增加了新创建的路径，其他进程的args对象则没有，后续调用时就会出错
-        # 包含动态生成的run_dir所有子目录路径字典
-        objects_to_broadcast = [args.run_dir, sub_dirs]
-    
-    else:
-        # 其他进程准备好相同结构的空列表接收数据
-        objects_to_broadcast = [None, None]
-    
-    # 执行广播操作(只有在分布式模式下需要广播)
-    if args.distributed:
-        # broadcast_object_list会将src=0(主进程)的列表内容发送给所有其他进程
-        torch.distributed.broadcast_object_list(objects_to_broadcast, src=0)
-    
-    # 所有进程用广播来的数据更新自己的配置
-    # 主进程已经有这些数据了，但为了代码统一，可以都执行
-    run_dir_synced, sub_dirs_synced = objects_to_broadcast
-    
-    args.run_dir = run_dir_synced
-    for key, path in sub_dirs_synced.items():
-        setattr(args, f"{key}_dir", path)
+        # 4. 准备广播 (现在只需要广播 args 对象本身，因为所有信息都在里面了)
+        objects_to_broadcast = [args]
 
-    # 设置屏障:确保所有进程都执行完前面的所有步骤后(参数更新)一起进入下一个阶段，防止时序问题
+    else:
+        # 其他进程准备接收
+        objects_to_broadcast = [None]
+
+    # 执行广播
+    if args.distributed:
+        torch.distributed.broadcast_object_list(objects_to_broadcast, src=0)
+
+    # 所有进程直接用广播来的、完整的 args 对象覆盖本地的
+    args = objects_to_broadcast[0]
+
+    # 设置屏障
     if args.distributed:
         torch.distributed.barrier()
 

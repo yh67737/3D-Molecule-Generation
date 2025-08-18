@@ -443,6 +443,14 @@ def train(
 
         total_loss_epoch = 0.0
         total_s_loss_epoch = 0.0
+        total_loss_I_epoch = 0.0
+        total_loss_II_epoch = 0.0
+        total_lossI_a_epoch = 0.0
+        total_lossI_r_epoch = 0.0
+        total_lossI_b_epoch = 0.0
+        total_lossII_a_epoch = 0.0
+        total_lossII_r_epoch = 0.0
+        total_lossII_b_epoch = 0.0
         
         # 创建数据迭代器
         pbar_train = tqdm(train_loader, desc=f"Epoch {epoch}")
@@ -676,6 +684,14 @@ def train(
 
             total_loss_epoch += total_loss.item()
             total_s_loss_epoch += loss_s_model.item()
+            total_loss_I_epoch += loss_I.item()
+            total_loss_II_epoch += loss_II.item()
+            total_lossI_a_epoch += lossI_a.item()
+            total_lossI_r_epoch += lossI_r.item()
+            total_lossI_b_epoch += lossI_b.item()
+            total_lossII_a_epoch += lossII_a.item()
+            total_lossII_r_epoch += lossII_r.item()
+            total_lossII_b_epoch += lossII_b.item()
             pbar_train.set_postfix({
                 'loss_G': f"{total_loss.item():.2f}", 
                 'loss_S': f"{loss_s_model.item():.2f}"
@@ -684,6 +700,24 @@ def train(
         avg_train_loss = total_loss_epoch / len(train_loader)
         avg_s_train_loss = total_s_loss_epoch / len(train_loader)
         logger.info(f"Epoch {epoch} [Train] 完成, 平均生成损失: {avg_train_loss:.4f}, 平均排序损失: {avg_s_train_loss:.4f}")
+        num_batches = len(train_loader)
+        avg_loss_I = total_loss_I_epoch / num_batches
+        avg_loss_II = total_loss_II_epoch / num_batches
+        avg_lossI_a = total_lossI_a_epoch / num_batches
+        avg_lossI_r = total_lossI_r_epoch / num_batches
+        avg_lossI_b = total_lossI_b_epoch / num_batches
+        avg_lossII_a = total_lossII_a_epoch / num_batches
+        avg_lossII_r = total_lossII_r_epoch / num_batches
+        avg_lossII_b = total_lossII_b_epoch / num_batches
+
+        # 构建日志字符串
+        log_str = (
+            f"  -> Loss Details: loss_G={avg_train_loss:.2e}, loss_S={avg_s_train_loss:.2f}, "
+            f"loss_I={avg_loss_I:.2f}, loss_II={avg_loss_II:.2f}, "
+            f"lossI_a={avg_lossI_a:.2f}, lossI_r={avg_lossI_r:.2f}, lossI_b={avg_lossI_b:.2f}, "
+            f"lossII_a={avg_lossII_a:.2f}, lossII_r={avg_lossII_r:.2f}, lossII_b={avg_lossII_b:.2f}"
+        )
+        logger.info(log_str)
 
 
         # --- 验证阶段 ---

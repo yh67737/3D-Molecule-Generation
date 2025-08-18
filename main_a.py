@@ -237,7 +237,7 @@ def get_args_parser():
     parser.add_argument('--max_atoms', type=int, default=50, help="生成分子的最大原子数。这是主生成循环的上限。")
     parser.add_argument('--min_atoms', type=int, default=3, help="在因新原子未连接而停止生成之前，所要求的最小原子数。")
     parser.add_argument('--num_generate', type=int, default=100, help='要生成的分子数量')
-    parser.add_argument('--model_ckpt', type=str, default='./output/model.pt', help='生成模型路径') # 修改
+    parser.add_argument('--model_ckpt', type=str, default='./output/2025-08-16_01-05-51/checkpoints/checkpoint_epoch_10.pth', help='生成模型路径') # 修改
     
     # --- 数据集参数 ---
     parser.add_argument('--data_path_1', type=str, default='./prepared_data/small.pt', help='Path to dataset 1 (for SortingNetwork).')
@@ -320,7 +320,7 @@ def get_args_parser():
     g_train.add_argument('--drop_path_rate', type=float, default=0.0, help='Stochastic depth drop rate.')
     
     # 环生成指导网络
-    parser.add_argument('--ring_guide_ckpt', type=str, default='./ring_network/ring_predictor_epoch_40.pt', help='Path to pre-trained ring guidance network checkpoint.')
+    parser.add_argument('--ring_guide_ckpt', type=str, default='./src/models/ring_network/ring_predictor_epoch_40.pt', help='Path to pre-trained ring guidance network checkpoint.')
 
     parser.add_argument('--optimizer', type=str, default='adamw', help='Optimizer (e.g., adamw, sgd).')
     parser.add_argument('--weight_decay', type=float, default=1e-2, help='Weight decay for optimizer.')

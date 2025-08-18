@@ -200,18 +200,18 @@ def generate_molecule(
             
             # 模型前向传播，只预测目标
             predictions = model(denoising_data, t, target_node_mask, edge_index_to_predict)
-            pred_r0 = predictions['predicted_r0']
+            pred_noise = predictions['predicted_r0']
             pred_logits_a = predictions['atom_type_logits']
             pred_logits_b = predictions['bond_logits']
 
-            # 进行一步采样
-            # a. 坐标采样
-            pred_noise = scheduler.get_predicted_noise_from_r0(
-                r_t=denoising_data.pos[target_node_mask],
-                t=t.expand(target_node_mask.sum()), # 扩展t到节点数
-                predicted_r0=pred_r0,
-                schedule_type='delta'
-            )
+            # # 进行一步采样
+            # # a. 坐标采样
+            # pred_noise = scheduler.get_predicted_noise_from_r0(
+            #     r_t=denoising_data.pos[target_node_mask],
+            #     t=t.expand(target_node_mask.sum()), # 扩展t到节点数
+            #     predicted_r0=pred_r0,
+            #     schedule_type='delta'
+            # )
             
             # DDPM 采样公式
             c1 = 1.0 / torch.sqrt(scheduler.gammas[t])
@@ -261,15 +261,15 @@ def generate_molecule(
             
             # 准备模型输入，这次是全局预测
             target_node_mask = torch.ones(fragment.num_nodes, dtype=torch.bool, device=device)
-            edge_index_to_predict = fragment.edge_index
+            edge_index_to_predict = torch.ones(fragment.num_edges, dtype=torch.bool, device=device)
             
             predictions = model(fragment, t, target_node_mask, edge_index_to_predict)
-            pred_r0 = predictions['predicted_r0']
+            pred_noise = predictions['predicted_r0']
             pred_logits_a = predictions['atom_type_logits']
             pred_logits_b = predictions['bond_logits']
             
-            # 全局采样
-            pred_noise = scheduler.get_predicted_noise_from_r0(fragment.pos, t.expand(fragment.num_nodes), pred_r0, 'alpha')
+            # # 全局采样
+            # pred_noise = scheduler.get_predicted_noise_from_r0(fragment.pos, t.expand(fragment.num_nodes), pred_r0, 'alpha')
             c1 = 1.0 / torch.sqrt(scheduler.alphas[t])
             c2 = (1.0 - scheduler.alphas[t]) / torch.sqrt(1.0 - scheduler.alpha_bars[t])
             pos_mean = c1 * (fragment.pos - c2 * pred_noise)
