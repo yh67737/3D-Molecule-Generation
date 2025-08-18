@@ -406,7 +406,8 @@ def train(
     scheduler, # HierarchicalDiffusionScheduler 实例
     subgraph_generator_fn,
     amp_autocast,
-    loss_scaler
+    loss_scaler,
+    train_sampler
 ):
     """
     主训练函数。
@@ -440,6 +441,10 @@ def train(
         # BatchNorm 层在训练时会使用当前批次的均值和方差进行归一化，并更新其内部的全局统计量；在评估时则会使用已学习到的全局统计量。
         model.train()  
         s_model.train()
+
+        if args.distributed:
+            # train_loader.sampler 是在 main_a.py 中创建的 DistributedSampler 实例
+            train_loader.sampler.set_epoch(epoch)
 
         total_loss_epoch = 0.0
         total_s_loss_epoch = 0.0
@@ -728,10 +733,17 @@ def train(
             # 保存周期性检查点 
             logger.info(f"在 Epoch {epoch} 保存周期性检查点及其验证损失...")
 
+            if args.distributed:
+                model_state_to_save = model.module.state_dict()
+                s_model_state_to_save = s_model.module.state_dict()
+            else:
+                model_state_to_save = model.state_dict()
+                s_model_state_to_save = s_model.state_dict()
+
             checkpoint_state = {
                 'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                's_model_state_dict': s_model.state_dict(),
+                'model_state_dict': model_state_to_save,
+                's_model_state_dict': s_model_state_to_save,
                 'optimizer_model_state_dict': optimizer_model.state_dict(),
                 'optimizer_s_model_state_dict': optimizer_s_model.state_dict(),
                 'scheduler_model_state_dict': scheduler_model.state_dict(),    
@@ -751,11 +763,18 @@ def train(
                 best_epoch = epoch
                 logger.info(f"🎉 新的最佳验证损失: {best_val_loss:.4f}。保存最佳模型...")
                 
+                if args.distributed:
+                    model_state_to_save = model.module.state_dict()
+                    s_model_state_to_save = s_model.module.state_dict()
+                else:
+                    model_state_to_save = model.state_dict()
+                    s_model_state_to_save = s_model.state_dict()
+
                 # 为最佳模型创建一个单独的保存状态
                 best_model_state = {
                     'epoch': epoch,
-                    'model_state_dict': model.state_dict(),
-                    's_model_state_dict': s_model.state_dict(),
+                    'model_state_dict': model_state_to_save,
+                    's_model_state_dict': s_model_state_to_save,
                     'best_val_loss': best_val_loss,
                     'args': args
                 }

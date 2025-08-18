@@ -44,34 +44,34 @@ class StableNormActivation(nn.Module):
                 start_dim += mul * ir.dim
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # 创建一个与输入形状相同的输出张量来存放结果
-        out = torch.zeros_like(x)
+        # 创建一个列表来收集所有处理过的特征部分
+        output_parts = []
 
         # 1. 处理标量部分 (l=0)
         scalar_dim = self.scalar_irreps.dim
         if scalar_dim > 0:
             scalars = x[:, :scalar_dim]
-            out[:, :scalar_dim] = self.activation(scalars)
+            activated_scalars = self.activation(scalars)
+            output_parts.append(activated_scalars)
 
         # 2. 处理非标量部分 (l>0)
         for start, end, mul, dim in self.non_scalar_dims:
-            # 提取当前类型的非标量特征
             non_scalars = x[:, start:end].view(-1, mul, dim)
-
-            # 计算范数，并加入一个极小的 epsilon 来防止除以零
-            # 这是保证数值稳定性的核心
             norm = torch.linalg.norm(non_scalars, dim=-1, keepdim=True)
             activated_norm = self.activation(norm)
-
-            # 使用一个安全的除法来缩放向量
-            # 当 norm 接近0时，分母 (norm + epsilon) 不为0，避免了 NaN
+            
             epsilon = 1e-8
             scaling_factor = activated_norm / (norm + epsilon)
+            
+            scaled_non_scalars = (non_scalars * scaling_factor).view(-1, mul * dim)
+            output_parts.append(scaled_non_scalars)
 
-            # 将缩放后的向量放回输出张量
-            out[:, start:end] = (non_scalars * scaling_factor).view(-1, mul * dim)
-
-        return out
+        # 3. 使用 torch.cat 将所有部分拼接成一个新张量
+        # 这是非原地操作，对 autograd 是安全的
+        if len(output_parts) == 0:
+            return torch.zeros_like(x)
+        else:
+            return torch.cat(output_parts, dim=-1)
 
 class SinusoidalTimeEmbedding(nn.Module):
     """标准的正弦时间嵌入"""
@@ -258,18 +258,20 @@ class EdgeUpdateNetwork(nn.Module):
         bond_time = self.time_embed(t)[edge_batch]
 
         msg_bond_left = self.bond_ffn_left(h_bond, h_node[left_node], bond_time)
-        aggregated_at_right = scatter(msg_bond_left, right_node, dim=0, dim_size=N, reduce="add")
+        aggregated_at_right = scatter(msg_bond_left.clone(), right_node, dim=0, dim_size=N, reduce="add")
         final_msg_left = aggregated_at_right[left_node]
 
         msg_bond_right = self.bond_ffn_right(h_bond, h_node[right_node], bond_time)
-        aggregated_at_left = scatter(msg_bond_right, left_node, dim=0, dim_size=N, reduce="add")
+        aggregated_at_left = scatter(msg_bond_right.clone(), left_node, dim=0, dim_size=N, reduce="add")
         final_msg_right = aggregated_at_left[right_node]
 
         msg_node_left = self.node_ffn_left(h_node[left_node])
         msg_node_right = self.node_ffn_right(h_node[right_node])
         msg_self = self.self_ffn(h_bond)
 
-        h_bond_sum = (final_msg_left + final_msg_right + msg_node_left + msg_node_right + msg_self)
+        h_bond_sum = msg_node_left + msg_node_right + msg_self 
+
+        #h_bond_sum = (final_msg_left + final_msg_right + msg_node_left + msg_node_right + msg_self)
         update_amount = self.final_norm_and_transform(
             node_input=h_bond_sum,
             t=t,

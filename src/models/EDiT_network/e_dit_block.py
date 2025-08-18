@@ -7,6 +7,7 @@ from .mul_head_graph_attention import get_norm_layer, GraphAttention,FeedForward
 from .tensor_product_rescale import FullyConnectedTensorProductRescale
 from .drop import GraphDropPath
 from .edge_update import EdgeUpdateNetwork
+from src.training.train_B import check_tensors
 
 _RESCALE = True
 
@@ -182,7 +183,7 @@ class E_DiT_Block(torch.nn.Module):
         node_output = node_output + node_features
 
         # 边更新路径 (Edge Update Path)
-        edge_output = edge_input
+        edge_output = edge_input.clone()
         edge_features = edge_input
         # 获取每条边所属的图的索引
         edge_batch = batch[edge_src]

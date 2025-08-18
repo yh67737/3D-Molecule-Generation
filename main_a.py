@@ -354,76 +354,60 @@ def main(args):
     is_main_process = (args.rank == 0)
 
     # 检查并创建输出文件夹
-    if is_main_process: # 防止多个进程竞争IO操作
-        # 获取当前运行的时间戳
+    if is_main_process:
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        # 将run_dir作为一个新的属性，run_dir = output_dir + timestamp
         args.run_dir = os.path.join(args.output_dir, timestamp) 
-        print(f"All outputs for this run will be saved to: {args.run_dir}")
-
-        # 定义所有需要创建的的子文件夹名称
-        sub_dirs = {
-            "checkpoints": os.path.join(args.run_dir, "checkpoints"), # 训练权重文件
-            "generated_pyg": os.path.join(args.run_dir, "generated_pyg"), # 新生成的PyG数据
-            "generated_images": os.path.join(args.run_dir, "generated_images"), # PyG数据画图得到的分子图
-            "tb_logs": os.path.join(args.run_dir, "tb_logs"), # TensorBoard 日志
-            "results": os.path.join(args.run_dir, "results") # 评估结果
-        }
         
-        # 循环创建所有文件夹
+        sub_dirs = {
+            "checkpoints": os.path.join(args.run_dir, "checkpoints"),
+            "generated_pyg": os.path.join(args.run_dir, "generated_pyg"),
+            "generated_images": os.path.join(args.run_dir, "generated_images"),
+            "tb_logs": os.path.join(args.run_dir, "tb_logs"),
+            "results": os.path.join(args.run_dir, "results")
+        }
         for path in sub_dirs.values():
             Path(path).mkdir(parents=True, exist_ok=True)
-
-        # 保存配置(args)对象
-        # 从 run_dir中提取时间戳，确保文件名与本次运行完全对应
+            
         timestamp_from_path = os.path.basename(args.run_dir)
-        
-        # 构建保存文件的完整路径
         args_save_filename = f"args_{timestamp_from_path}.pt"
         args_save_path = os.path.join(args.args_save_dir, args_save_filename)
-        
-        # 保存args对象
         torch.save(args, args_save_path)
+        
+        print(f"All outputs for this run will be saved to: {args.run_dir}")
         print(f"Configuration for this run has been saved to: {args_save_path}")
         
-        # 准备要广播的对象列表:如果不做处理，只有主进程的args对象增加了新创建的路径，其他进程的args对象则没有，后续调用时就会出错
-        # 包含动态生成的run_dir所有子目录路径字典
-        objects_to_broadcast = [args.run_dir, sub_dirs]
-    
+        objects_to_broadcast = [args.run_dir, sub_dirs, args_save_path]
     else:
-        # 其他进程准备好相同结构的空列表接收数据
-        objects_to_broadcast = [None, None]
-    
-    # 执行广播操作(只有在分布式模式下需要广播)
+        objects_to_broadcast = [None, None, None]
+
+    # 步骤 2: 广播路径信息给所有进程
+
     if args.distributed:
-        # broadcast_object_list会将src=0(主进程)的列表内容发送给所有其他进程
         torch.distributed.broadcast_object_list(objects_to_broadcast, src=0)
-    
-    # 所有进程用广播来的数据更新自己的配置
-    # 主进程已经有这些数据了，但为了代码统一，可以都执行
-    run_dir_synced, sub_dirs_synced = objects_to_broadcast
-    
+
+    # 步骤 3: 所有进程用接收到的信息更新自己的配置
+    run_dir_synced, sub_dirs_synced, args_save_path_synced = objects_to_broadcast
     args.run_dir = run_dir_synced
+    args.args_save_path = args_save_path_synced
     for key, path in sub_dirs_synced.items():
         setattr(args, f"{key}_dir", path)
 
-    # 设置屏障:确保所有进程都执行完前面的所有步骤后(参数更新)一起进入下一个阶段，防止时序问题
+    # 步骤 4: 在所有进程都获得了正确的 run_dir 后，才初始化 Logger
+    logger = FileLogger(
+        output_dir=args.run_dir, 
+        is_master=is_main_process,
+        is_rank0=is_main_process
+    )
+
+    # 步骤 5: 设置屏障，确保所有进程都完成了初始化
     if args.distributed:
         torch.distributed.barrier()
 
-    # 初始化Logger
-    # 日志只会由主进程(rank 0)创建和写入
-    logger = FileLogger(
-    output_dir=args.run_dir, 
-    is_master=is_main_process, # is_master 控制是否写入文件
-    is_rank0=is_main_process   # is_rank0 控制是否创建真实logger
-    )
-
-    # 使用logger记录信息
+    # 步骤 6: 现在可以安全地进行日志记录了
     logger.info("Logger initialized. Distributed config synchronized.")
-    logger.info(f"All outputs for this run will be saved to: {args.run_dir}")
-    logger.info(f"Master process (rank 0) configuration:\n{args}") # 只记录主进程的配置作为代表
-    logger.info(f"args_save_path:{args_save_path}")
+    if is_main_process:
+        logger.info(f"Configuration save path: {args.args_save_path}")
+    logger.info(f"Master process (rank 0) configuration:\n{args}")
     # 如果想确认每个进程都已启动，可以像下面这样写，但通常没必要
     # logger.info(f"Process {args.rank} has started.") # 这条日志只会在 rank 0 的控制台和文件中出现
     
@@ -609,7 +593,7 @@ def main(args):
         device=args.device
     )
     train(args, logger, train_loader, val_loader, sorting_network, generator_network, scheduler, subgraph_generator_fn=generate_single_centered_subgraph, amp_autocast=amp_autocast,
-        loss_scaler=loss_scaler)
+        loss_scaler=loss_scaler, train_sampler=train_sampler)
 
     # 分子生成接口
 

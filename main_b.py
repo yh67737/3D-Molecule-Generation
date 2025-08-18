@@ -281,12 +281,9 @@ def main(args):
     #     torch.distributed.barrier()
 
     if is_main_process:
-        # 1. 创建 run_dir
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         args.run_dir = os.path.join(args.output_dir, timestamp) 
-        print(f"All outputs for this run will be saved to: {args.run_dir}")
-
-        # 2. 定义并创建子目录
+        
         sub_dirs = {
             "checkpoints": os.path.join(args.run_dir, "checkpoints"),
             "generated_pyg": os.path.join(args.run_dir, "generated_pyg"),
@@ -296,64 +293,53 @@ def main(args):
         }
         for path in sub_dirs.values():
             Path(path).mkdir(parents=True, exist_ok=True)
-    
-        # --- 关键修改：在这里提前将 _dir 属性添加到 args 对象 ---
-        for key, path in sub_dirs.items():
-            setattr(args, f"{key}_dir", path)
-    
-        # 3. 保存已经包含了所有 _dir 属性的 args 对象
+            
         timestamp_from_path = os.path.basename(args.run_dir)
         args_save_filename = f"args_{timestamp_from_path}.pt"
         args_save_path = os.path.join(args.args_save_dir, args_save_filename)
         torch.save(args, args_save_path)
+        
+        print(f"All outputs for this run will be saved to: {args.run_dir}")
         print(f"Configuration for this run has been saved to: {args_save_path}")
         
-        # 4. 准备广播 (现在只需要广播 args 对象本身，因为所有信息都在里面了)
-        objects_to_broadcast = [args]
-
+        objects_to_broadcast = [args.run_dir, sub_dirs, args_save_path]
     else:
-        # 其他进程准备接收
-        objects_to_broadcast = [None]
+        objects_to_broadcast = [None, None, None]
 
-    # 执行广播
+    # 步骤 2: 广播路径信息给所有进程
+
     if args.distributed:
         torch.distributed.broadcast_object_list(objects_to_broadcast, src=0)
 
-    # 所有进程直接用广播来的、完整的 args 对象覆盖本地的
-    args = objects_to_broadcast[0]
+    # 步骤 3: 所有进程用接收到的信息更新自己的配置
+    run_dir_synced, sub_dirs_synced, args_save_path_synced = objects_to_broadcast
+    args.run_dir = run_dir_synced
+    args.args_save_path = args_save_path_synced
+    for key, path in sub_dirs_synced.items():
+        setattr(args, f"{key}_dir", path)
 
-    # 设置屏障
+    # 步骤 4: 在所有进程都获得了正确的 run_dir 后，才初始化 Logger
+    logger = FileLogger(
+        output_dir=args.run_dir, 
+        is_master=is_main_process,
+        is_rank0=is_main_process
+    )
+
+    # 步骤 5: 设置屏障，确保所有进程都完成了初始化
     if args.distributed:
         torch.distributed.barrier()
 
-    # 初始化Logger
-    # 日志只会由主进程(rank 0)创建和写入
-    logger = FileLogger(
-    output_dir=args.run_dir, 
-    is_master=is_main_process, # is_master 控制是否写入文件
-    is_rank0=is_main_process   # is_rank0 控制是否创建真实logger
-    )
-
-    # 使用logger记录信息
+    # 步骤 6: 现在可以安全地进行日志记录了
     logger.info("Logger initialized. Distributed config synchronized.")
-    logger.info(f"All outputs for this run will be saved to: {args.run_dir}")
-    logger.info(f"Master process (rank 0) configuration:\n{args}") # 只记录主进程的配置作为代表
-    logger.info(f"args_save_path:{args_save_path}")
-    # 如果想确认每个进程都已启动，可以像下面这样写，但通常没必要
-    # logger.info(f"Process {args.rank} has started.") # 这条日志只会在 rank 0 的控制台和文件中出现
-    
-    # 设置随机种子和模型使用的设备,为不同进程设置不同种子
-    torch.manual_seed(args.seed + args.rank) 
-    np.random.seed(args.seed + args.rank)
-    random.seed(args.seed + args.rank)
-    
+    if is_main_process:
+        logger.info(f"Configuration save path: {args.args_save_path}")
+    logger.info(f"Master process (rank 0) configuration:\n{args}")
+
     device = torch.device(args.device)
     logger.info(f"Using device: {device}")
     if args.device == 'cuda' and torch.cuda.is_available():
-        torch.backends.cudnn.benchmark = True # 一个性能优化选项
-        logger.info(f"CUDA device name: {torch.cuda.get_device_name(args.local_rank)}")
-
-    logger.info("Environment initialization complete.")
+        # This log is helpful for confirming which GPU each process is using
+        logger.info(f"Process {args.rank} assigned to CUDA device: {torch.cuda.get_device_name(args.local_rank)}")
 
     ## 模块3: 数据准备(Dataset & DataLoader)
     logger.info("--- Starting Data Preparation (JSON Fragment Version) ---")
@@ -452,9 +438,12 @@ def main(args):
 
     # 模型分布式训练封装
     if args.distributed:
-        generator_network = torch.nn.parallel.DistributedDataParallel(generator_network, device_ids=[args.local_rank])
-        logger.info("Models wrapped with DistributedDataParallel.")
-
+        generator_network = torch.nn.parallel.DistributedDataParallel(
+            generator_network, 
+            device_ids=[args.local_rank],
+            find_unused_parameters=True 
+        )
+        logger.info("Models wrapped with DistributedDataParallel (find_unused_parameters=True).")
     # 记录模型和参数统计
     if is_main_process:
         logger.info("--- Model Architectures ---")
@@ -485,7 +474,7 @@ def main(args):
         s=args.s,
         device=args.device
     )
-    train(args, logger, train_loader, val_loader, generator_network, scheduler, amp_autocast, loss_scaler)
+    train(args, logger, train_loader, val_loader, generator_network, scheduler, amp_autocast, loss_scaler, train_sampler)
 
     # 分子生成接口
 
