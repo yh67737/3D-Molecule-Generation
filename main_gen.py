@@ -114,7 +114,9 @@ def main(args):
     p_model = RingPredictor(
         node_feature_dim=args.num_atom_types,
         edge_feature_dim=args.num_bond_types,
-        num_ring_classes=1
+        num_ring_classes=1,
+        hidden_nf=64,   # EGNN隐藏层维度
+        n_layers=4      # EGNN层数
     ).to(args.device)
     p_model.load_state_dict(torch.load(args.ring_guide_ckpt, map_location=args.device))
     p_model.eval()
@@ -187,15 +189,29 @@ if __name__ == '__main__':
     # 2. 添加你想从命令行控制的参数
     #    - 首先，让参数文件的路径本身变成一个参数，这样更灵活！
     parser.add_argument('--args_path', type=str, 
-                        default='./saved_args/args_2025-08-16_12-43-43.pt', 
+                        default='./saved_args/args_2025-08-19_05-09-57.pt', 
                         help='Path to the saved arguments .pt file')
     
-    #    - 其次，添加你想覆盖的参数。设置 default=None 是关键。
-    parser.add_argument('--model_ckpt', type=str, default=None, 
+    #    - 模型路径
+    parser.add_argument('--model_ckpt', type=str, 
+                        default='./output/2025-08-19_05-09-57/checkpoints/checkpoint_epoch_100.pth',
                         help='Override the model checkpoint path from the args file.')
+
+    #    - 生成分子的最大原子数 (default=None)
+    parser.add_argument('--max_atoms', type=int, 
+                        default=3, 
+                        help='(Optional) Override the maximum number of atoms per molecule.')
     
-    #    - 你可以按需添加更多想覆盖的参数
-    #    parser.add_argument('--num_generate', type=int, default=None, help='Override number of molecules to generate.')
+    #    - 生成分子的最小原子数 (default=None)
+    parser.add_argument('--min_atoms', type=int, 
+                        default=1, 
+                        help='(Optional) Override the minimum number of atoms before stopping.')
+
+    #    - 要生成的分子总数 (default=None)
+    parser.add_argument('--num_generate', type=int, 
+                        default=2, 
+                        help='(Optional) Override the total number of molecules to generate.')
+    # --------------------------------
 
     # 3. 解析来自命令行的参数
     cli_args = parser.parse_args()
@@ -205,13 +221,29 @@ if __name__ == '__main__':
     print(f"原始模型路径 (from file): {args.model_ckpt}")
 
     # 5. 用命令行参数覆盖文件中的参数（如果提供了的话）
+    override_count = 0
     if cli_args.model_ckpt is not None:
         args.model_ckpt = cli_args.model_ckpt
-        print(f"✅ 模型路径已被命令行覆盖为: {args.model_ckpt}")
+        print(f"✅ 'model_ckpt' overridden to: {args.model_ckpt}")
+        override_count += 1
+        
+    if cli_args.max_atoms is not None:
+        args.max_atoms = cli_args.max_atoms
+        print(f"✅ 'max_atoms' overridden to: {args.max_atoms}")
+        override_count += 1
+
+    if cli_args.min_atoms is not None:
+        args.min_atoms = cli_args.min_atoms
+        print(f"✅ 'min_atoms' overridden to: {args.min_atoms}")
+        override_count += 1
+
+    if cli_args.num_generate is not None:
+        args.num_generate = cli_args.num_generate
+        print(f"✅ 'num_generate' overridden to: {args.num_generate}")
+        override_count += 1
     
-    # if cli_args.num_generate is not None:
-    #     args.num_generate = cli_args.num_generate
-    #     print(f"✅ 生成数量已被命令行覆盖为: {args.num_generate}")
+    if override_count == 0:
+        print("No parameters overridden, using all values from the loaded args file.")
 
     # 6. 使用最终确定的参数运行主函数
     main(args)

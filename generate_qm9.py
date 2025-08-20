@@ -104,7 +104,7 @@ def generate_molecule(
         print(f"\n--- [主循环] 当前原子数: {num_existing_atoms}, 开始生成第 {num_existing_atoms + 1} 个原子 ---")
         
         # a. 添加带噪的新原子
-        print("步骤 2a: 添加带噪的新原子")
+        print("步骤 2: 添加带噪的新原子")
         # i. 新原子类型为吸收态
         absorbing_state_idx = 5
         new_atom_type_idx = torch.tensor([absorbing_state_idx], device=device)
@@ -161,7 +161,7 @@ def generate_molecule(
         no_bond_idx = 4
         new_edge_attr = F.one_hot(
             torch.full((num_new_edges,), no_bond_idx, device=device), # 指定形状为num_new_edges，填充值为no_bond_idx的一维向量，如tensor([4, 4, 4, 4, 4, 4])
-            num_classes = 4
+            num_classes = 5
         ).float() # 将上一步的索引列表转换为 one-hot 编码
         # e.g.
         # tensor([[0., 0., 0., 0., 1.],
@@ -196,10 +196,10 @@ def generate_molecule(
             # 这里的 t 是 per-graph 的，模型内部会处理
             target_node_mask = denoising_data.is_new_node.squeeze().bool()
             target_edge_mask = (target_node_mask[denoising_data.edge_index[0]] | target_node_mask[denoising_data.edge_index[1]])
-            edge_index_to_predict = denoising_data.edge_index[:, target_edge_mask]
+            # edge_index_to_predict = denoising_data.edge_index[:, target_edge_mask]
             
             # 模型前向传播，只预测目标
-            predictions = model(denoising_data, t, target_node_mask, edge_index_to_predict)
+            predictions = model(denoising_data, t, target_node_mask, target_edge_mask)
             pred_noise = predictions['predicted_r0']
             pred_logits_a = predictions['atom_type_logits']
             pred_logits_b = predictions['bond_logits']
@@ -261,9 +261,9 @@ def generate_molecule(
             
             # 准备模型输入，这次是全局预测
             target_node_mask = torch.ones(fragment.num_nodes, dtype=torch.bool, device=device)
-            edge_index_to_predict = torch.ones(fragment.num_edges, dtype=torch.bool, device=device)
+            target_edge_mask = torch.ones(fragment.num_edges, dtype=torch.bool, device=device)
             
-            predictions = model(fragment, t, target_node_mask, edge_index_to_predict)
+            predictions = model(fragment, t, target_node_mask, target_edge_mask)
             pred_noise = predictions['predicted_r0']
             pred_logits_a = predictions['atom_type_logits']
             pred_logits_b = predictions['bond_logits']
@@ -313,7 +313,10 @@ def generate_molecule(
             print(f"  -> 新原子未连接到片段，生成终止。")
             # 终止前，移除最后一个未连接的原子
             # (这是一个可选的清理步骤)
-            final_mask = torch.ones(fragment.num_nodes, dtype=torch.bool)
+            # --- 关键修改：添加 device 参数 ---
+            final_mask = torch.ones(fragment.num_nodes, 
+                                    dtype=torch.bool, 
+                                    device=fragment.x.device) # <-- 和 fragment 在同一设备上
             final_mask[new_atom_idx] = False
             fragment = fragment.subgraph(final_mask)
             break

@@ -248,25 +248,56 @@ class E_DiT_Network(nn.Module):
         embedded_inputs = self.embedding_layer(data)
         h = embedded_inputs["node_input"]
         e = embedded_inputs["edge_input"]
+
+        # print(f"EmbeddingLayer output shapes -- h: {h.shape}, e: {e.shape}")
+
+        # --- 关键修改：检查并创建 batch 索引 ---
+        # 如果 data.batch 不存在 (对于单个Data对象，它就是None)，
+        # 我们就为它创建一个全零的 batch 索引张量。
+        if hasattr(data, 'batch') and data.batch is not None:
+            batch = data.batch
+        else:
+            # 创建一个形状为 [num_nodes] 的张量，所有元素都是0
+            batch = torch.zeros(data.num_nodes, dtype=torch.long, device=data.x.device)
+    
+        # 将正确的 batch 索引也放入 embedded_inputs 字典中
+        embedded_inputs['batch'] = batch
+        # ----------------------------------------
+
+
+
         # print('h:', h)
         # print('e before edit:', e)
         # t_embed = self.time_embedding(t)  #未使用，归一层中自带时间嵌入
         
         # 步骤2：依次通过所有E-DiT Block，进行深度特征提纯
-        for block in self.blocks:
+        # for block in self.blocks:
+        for i, block in enumerate(self.blocks):
             # 在每次调用前，更新字典中的节点和边特征为上一轮的输出
             embedded_inputs['node_input'] = h
             embedded_inputs['edge_input'] = e
 
+            # --- 添加调试打印 ---
+            # print(f"\n--- Before Block {i} ---")
+            # print(f"  h shape: {h.shape}")
+            # print(f"  e shape: {e.shape}")
+            # print(f"  batch tensor: {embedded_inputs['batch']}")
+
             # 使用字典解包 ** 来传递所有参数，并单独传递时间步 t
             h, e = block(t=t, **embedded_inputs)
+
+            # print(f"--- After Block {i} ---")
+            # print(f"  h shape: {h.shape}")
+            # print(f"  e shape: {e.shape}")
+            # --------------------
+
             # print('h after block:', h)
             # print('e after block:', e)
         # print('h before norm:', h)
         # print('e before norm:', e)
         # 步骤3：最终层归一化
-        h = self.final_norm(h, t, data.batch)
-        edge_batch = data.batch[data.edge_index[0]]
+        h = self.final_norm(h, t, batch)
+        edge_batch = batch[data.edge_index[0]]
         e = self.final_edge_norm(e, t, edge_batch)
         # print('h after edit:', h.shape)
         # print('e after edit:', e.shape)

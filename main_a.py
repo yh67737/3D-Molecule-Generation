@@ -371,6 +371,16 @@ def main(args):
         timestamp_from_path = os.path.basename(args.run_dir)
         args_save_filename = f"args_{timestamp_from_path}.pt"
         args_save_path = os.path.join(args.args_save_dir, args_save_filename)
+
+        # --- 关键修改：在这里增加两行代码 ---
+        # 在保存 args 之前，先把所有子目录路径添加到 args 对象中
+        for key, path in sub_dirs.items():
+            setattr(args, f"{key}_dir", path)
+        # 同样地，把 args_save_path 也添加进去
+        args.args_save_path = args_save_path
+        # ------------------------------------
+        
+        # 现在再保存，args 对象已经是完整的了
         torch.save(args, args_save_path)
         
         print(f"All outputs for this run will be saved to: {args.run_dir}")
