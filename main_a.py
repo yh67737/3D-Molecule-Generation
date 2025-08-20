@@ -49,8 +49,8 @@ class PairedMoleculeDataset(Dataset):
     def dataset1(self):
         # 当第一次访问 self.dataset1 时，才真正从硬盘加载数据
         if self._dataset1 is None:
-            if self.logger:
-                self.logger.info(f"First access: Lazily loading dataset 1 from: {self.data_path_1}")
+            #if self.logger:
+                #self.logger.info(f"First access: Lazily loading dataset 1 from: {self.data_path_1}")
             self._dataset1 = torch.load(self.data_path_1, weights_only=False)
         return self._dataset1
 
@@ -58,8 +58,8 @@ class PairedMoleculeDataset(Dataset):
     def dataset2(self):
         # 当第一次访问 self.dataset2 时，才真正从硬盘加载数据
         if self._dataset2 is None:
-            if self.logger:
-                self.logger.info(f"First access: Lazily loading dataset 2 from: {self.data_path_2}")
+            #if self.logger:
+                #self.logger.info(f"First access: Lazily loading dataset 2 from: {self.data_path_2}")
             self._dataset2 = torch.load(self.data_path_2, weights_only=False)
         return self._dataset2
 
@@ -539,9 +539,21 @@ def main(args):
 
     # 模型分布式训练封装
     if args.distributed:
-        sorting_network = torch.nn.parallel.DistributedDataParallel(sorting_network, device_ids=[args.local_rank])
-        generator_network = torch.nn.parallel.DistributedDataParallel(generator_network, device_ids=[args.local_rank])
-        logger.info("Models wrapped with DistributedDataParallel.")
+        # 为 sorting_network 添加 find_unused_parameters=True
+        sorting_network = torch.nn.parallel.DistributedDataParallel(
+            sorting_network, 
+            device_ids=[args.local_rank], 
+            find_unused_parameters=True
+        )
+        
+        # 为 generator_network 也添加上，以防万一
+        generator_network = torch.nn.parallel.DistributedDataParallel(
+            generator_network, 
+            device_ids=[args.local_rank], 
+            find_unused_parameters=True
+        )
+        
+        logger.info("Models wrapped with DistributedDataParallel (with find_unused_parameters=True).")
 
     # 记录模型和参数统计
     if is_main_process:

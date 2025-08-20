@@ -748,11 +748,12 @@ def train(
                 'optimizer_s_model_state_dict': optimizer_s_model.state_dict(),
                 'scheduler_model_state_dict': scheduler_model.state_dict(),    
                 'scheduler_s_model_state_dict': scheduler_s_model.state_dict(), 
-                'loss_scaler_state_dict': loss_scaler.state_dict(),
                 'validation_loss': avg_val_loss, 
                 's_validation_loss': avg_s_val_loss,
                 'args': args
             }
+            if loss_scaler is not None:
+                checkpoint_state['loss_scaler_state_dict'] = loss_scaler.state_dict()
             # 使用包含 epoch 编号的唯一文件名
             checkpoint_path = os.path.join(args.checkpoints_dir, f'checkpoint_epoch_{epoch}.pth')
             torch.save(checkpoint_state, checkpoint_path)

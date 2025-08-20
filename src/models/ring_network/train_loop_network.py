@@ -6,61 +6,79 @@ import numpy as np
 # from e3nn.nn import Dropout
 from torch.nn import Linear, BatchNorm1d, Dropout
 import torch.nn.functional as F
-from torch_geometric.data import Batch, DataLoader
+from torch_geometric.data import Batch
+from torch_geometric.loader import DataLoader
 from torch_geometric.nn import GATConv
 from sklearn.metrics import accuracy_score
 from tqdm import tqdm
+from egnn_new import EGNN 
 
 # --- RingPredictor 模型定义 (保持不变) ---
 class RingPredictor(torch.nn.Module):
     """
-    图注意力网络（GAT），增加了更强的正则化来预测环结构。
+    一个基于EGNN的E(3)等变的环结构预测器。
+    它同时利用节点/边特征和3D坐标信息。
     """
 
-    def __init__(self, node_feature_dim: int, edge_feature_dim: int, num_ring_classes: int = 1, hidden_dim: int = 64,
-                 num_heads: int = 4, gat_dropout: float = 0.1, dropout_rate: float = 0.5):  # <--- 新增 dropout_rate 参数
+    def __init__(self, node_feature_dim: int, edge_feature_dim: int, num_ring_classes: int = 1, 
+                 hidden_nf: int = 64, n_layers: int = 4, attention: bool = True,
+                 dropout_rate: float = 0.5):
         """
         Args:
-            ...
-            gat_dropout (float): GAT层中注意力权重的dropout率。
-            dropout_rate (float): 应用于节点特征的dropout率。
+            node_feature_dim (int): 输入节点特征的维度。
+            edge_feature_dim (int): 输入边特征的维度。(注意：EGNN不直接使用edge_attr，但我们可以在forward中处理)
+            num_ring_classes (int): 输出类别的数量 (对于二分类，为1)。
+            hidden_nf (int): EGNN隐藏层的维度。
+            n_layers (int): EGNN中EquivariantBlock的数量。
+            attention (bool): EGNN中是否使用注意力机制。
+            dropout_rate (float): 应用于最终输出前的dropout率。
         """
         super(RingPredictor, self).__init__()
-        self.num_ring_classes = num_ring_classes
 
-        # GAT卷积层，edge_dim使其能利用边特征
-        # GATConv内部的dropout作用于注意力系数，防止模型过度依赖少数邻居
-        self.conv1 = GATConv(node_feature_dim, hidden_dim, heads=num_heads, concat=True, dropout=gat_dropout,
-                             edge_dim=edge_feature_dim)
-        self.bn1 = BatchNorm1d(hidden_dim * num_heads)
+        # 1. 实例化 EGNN 作为模型的主干
+        #    in_node_nf: 输入节点特征维度
+        #    hidden_nf: 隐藏层维度
+        #    out_node_nf: EGNN输出的节点特征维度，我们让它等于隐藏层维度
+        #    in_edge_nf: EGNN计算距离后拼接的额外边特征维度。
+        #                原始EGNN只用了距离(2维: radial, sin_embedding)，
+        #                我们这里暂时设置为0，在forward里动态处理。
+        self.egnn = EGNN(
+            in_node_nf=node_feature_dim,
+            hidden_nf=hidden_nf,
+            out_node_nf=hidden_nf, 
+            in_edge_nf=edge_feature_dim, # <-- 关键：把边特征维度传给EGNN
+            n_layers=n_layers,
+            attention=attention
+        )
 
-        self.conv2 = GATConv(hidden_dim * num_heads, hidden_dim, heads=num_heads, concat=True, dropout=gat_dropout,
-                             edge_dim=edge_feature_dim)
-        self.bn2 = BatchNorm1d(hidden_dim * num_heads)
-
-        # --- 新增的正则化层 ---
-        # 这是一个标准的Dropout层，它将作用于整个节点的嵌入表示
-        self.dropout = Dropout(p=dropout_rate)  # <--- 在此实例化
-
-        # 最后的线性输出层
-        self.out = Linear(hidden_dim * num_heads, num_ring_classes)
+        # 2. 定义一个分类头 (Classification Head)
+        #    这个MLP将EGNN输出的节点表征映射到最终的预测logits
+        self.head = torch.nn.Sequential(
+            torch.nn.Linear(hidden_nf, hidden_nf),
+            torch.nn.ReLU(),
+            Dropout(p=dropout_rate), # 使用标准的Dropout
+            torch.nn.Linear(hidden_nf, num_ring_classes)
+        )
 
     def forward(self, data: Batch) -> torch.Tensor:
         """模型的前向传播"""
-        x, edge_index, edge_attr = data.x, data.edge_index, data.edge_attr
+        # 从data对象中解包出节点特征(h), 坐标(x), 和边索引
+        h, x, edge_index, edge_attr = data.x, data.pos, data.edge_index, data.edge_attr # <-- 增加 edge_attr
 
-        # --- 第1层 ---
-        x = self.conv1(x, edge_index, edge_attr)
-        x = F.relu(self.bn1(x))
-        x = self.dropout(x)  # <--- 在激活函数后应用Dropout
+        # 检查是否有边，如果没有边，EGNN无法运行
+        if edge_index is None or edge_index.numel() == 0:
+            # 对于没有边的图（单个原子），直接返回0的logits
+            return torch.zeros((h.size(0), 1), device=h.device)
 
-        # --- 第2层 ---
-        x = self.conv2(x, edge_index, edge_attr)
-        x = F.relu(self.bn2(x))
-        x = self.dropout(x)  # <--- 再次应用Dropout
+        # 1. 通过EGNN主干网络处理图，得到更新后的节点特征和坐标
+        #    注意：这个版本的EGNN不直接接收edge_attr，它内部通过coord2diff计算距离作为边信息。
+        #    如果想把edge_attr也利用起来，需要修改EGNN内部或在这里做特征拼接，
+        #    但对于环预测，几何信息可能更重要。我们先从简化版开始。
+        h_final, _ = self.egnn(h=h, x=x, edge_index=edge_index, edge_attr=edge_attr)
 
-        # 输出原始的logits
-        logits = self.out(x)
+        # 2. 将最终的节点特征通过分类头得到预测logits
+        logits = self.head(h_final)
+        
         return logits
 
 
@@ -109,7 +127,7 @@ def evaluate(model, loader, criterion, device):
 
 if __name__ == '__main__':
     # 使用新的预处理数据集 ---
-    PREPROCESSED_DATA_DIR = 'prepared_data/autodl-tmp'
+    PREPROCESSED_DATA_DIR = 'prepared_data/gdb9_pt_data_for_ring_predictor'
     BATCH_SIZE = 1024
     LEARNING_RATE = 1e-4
     EPOCHS = 50
@@ -151,15 +169,21 @@ if __name__ == '__main__':
     NODE_FEATURE_DIM = sample_data.x.shape[1]
     EDGE_FEATURE_DIM = sample_data.edge_attr.shape[1]
     NUM_RING_CLASSES = 1
-
-    # --- 在这里加上打印语句 ---
+    
     print("\n--- Model Dimensionality ---")
     print(f"Node feature dimension: {NODE_FEATURE_DIM}")
     print(f"Edge feature dimension: {EDGE_FEATURE_DIM}") # <--- 核心打印语句
     print("--------------------------\n")
-    # ----------------------------
 
-    model = RingPredictor(NODE_FEATURE_DIM, EDGE_FEATURE_DIM, NUM_RING_CLASSES).to(device)
+    # 实例化新的 EGNN-based RingPredictor
+    model = RingPredictor(
+        node_feature_dim=NODE_FEATURE_DIM,
+        edge_feature_dim=EDGE_FEATURE_DIM, 
+        num_ring_classes=NUM_RING_CLASSES,
+        hidden_nf=64,   # EGNN隐藏层维度
+        n_layers=4      # EGNN层数
+    ).to(device)
+    
     criterion = torch.nn.BCEWithLogitsLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
