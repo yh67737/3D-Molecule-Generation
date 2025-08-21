@@ -22,38 +22,38 @@ def check_tensors(step_name, tensor_dict):
 # 1. 辅助函数 (Helper Functions)
 # ==============================================================================
 
-def scale_to_unit_sphere(pos: torch.Tensor, batch_map: torch.Tensor) -> torch.Tensor:
-    """
-    将批次中每个图的坐标独立地缩放到单位球内。
+# def scale_to_unit_sphere(pos: torch.Tensor, batch_map: torch.Tensor) -> torch.Tensor:
+#     """
+#     将批次中每个图的坐标独立地缩放到单位球内。
     
-    Args:
-        pos (torch.Tensor): 批次中所有节点的坐标张量, shape [N, 3]。
-        batch_map (torch.Tensor): 将每个节点映射到其所属图的向量, shape [N]。
+#     Args:
+#         pos (torch.Tensor): 批次中所有节点的坐标张量, shape [N, 3]。
+#         batch_map (torch.Tensor): 将每个节点映射到其所属图的向量, shape [N]。
     
-    Returns:
-        torch.Tensor: 缩放后的坐标。
-    """
-    # 假设我们的输入 pos 是一个 [N, 3] 的张量，代表批次中所有 N 个原子的坐标；
-    # batch_map 是一个 [N] 的张量，告诉我们每个原子属于哪个分子图（0, 0, 0, 1, 1, ...）。
-    # PyG 的 scatter 函数可以高效地按组求和/求均值
-    from torch_geometric.utils import scatter
+#     Returns:
+#         torch.Tensor: 缩放后的坐标。
+#     """
+#     # 假设我们的输入 pos 是一个 [N, 3] 的张量，代表批次中所有 N 个原子的坐标；
+#     # batch_map 是一个 [N] 的张量，告诉我们每个原子属于哪个分子图（0, 0, 0, 1, 1, ...）。
+#     # PyG 的 scatter 函数可以高效地按组求和/求均值
+#     from torch_geometric.utils import scatter
     
-    # 计算每个节点到其质心的距离
-    # 输入 pos 的维度是 [N, 3]
-    # e.g. 对于第 0 行 [x_0, y_0, z_0]，它计算 sqrt(x_0² + y_0² + z_0²)
-    # torch.linalg.norm 沿着 dim=1 进行操作，这个维度在计算后会消失
-    # 输出 distances 的维度是 [N]
-    distances = torch.linalg.norm(pos, dim=1)
+#     # 计算每个节点到其质心的距离
+#     # 输入 pos 的维度是 [N, 3]
+#     # e.g. 对于第 0 行 [x_0, y_0, z_0]，它计算 sqrt(x_0² + y_0² + z_0²)
+#     # torch.linalg.norm 沿着 dim=1 进行操作，这个维度在计算后会消失
+#     # 输出 distances 的维度是 [N]
+#     distances = torch.linalg.norm(pos, dim=1)
     
-    # 按图分组，计算每个图中的最大距离
-    max_distances = scatter(distances, batch_map, dim=0, reduce='max') # shape: [num_graphs]
+#     # 按图分组，计算每个图中的最大距离
+#     max_distances = scatter(distances, batch_map, dim=0, reduce='max') # shape: [num_graphs]
     
-    # 计算每个图的缩放因子，加上一个小的 epsilon 防止除以零
-    scale_factors = max_distances[batch_map].unsqueeze(1) + 1e-8
+#     # 计算每个图的缩放因子，加上一个小的 epsilon 防止除以零
+#     scale_factors = max_distances[batch_map].unsqueeze(1) + 1e-8
 
     
-    # 缩放坐标
-    return pos / scale_factors
+#     # 缩放坐标
+#     return pos / scale_factors
 
 
 def noise_discrete_features(
@@ -299,7 +299,8 @@ def validate(val_loader, model, scheduler, args, amp_autocast):
 
         # --- 0. 准备工作 ---
         num_graphs, num_nodes, num_edges = clean_batch.num_graphs, clean_batch.num_nodes, clean_batch.num_edges
-        scaled_pos = scale_to_unit_sphere(clean_batch.pos, clean_batch.batch)
+        # scaled_pos = scale_to_unit_sphere(clean_batch.pos, clean_batch.batch)
+        scaled_pos = clean_batch.pos # 不进行坐标缩放
         t1 = torch.randint(1, scheduler.T1 + 1, (num_graphs,), device=device)
         t2 = torch.randint(1, scheduler.T2 + 1, (num_graphs,), device=device)
         noise1, noise2 = torch.randn_like(scaled_pos), torch.randn_like(scaled_pos)
@@ -445,7 +446,8 @@ def train(
                 num_edges = clean_batch.num_edges # 批次中所有图的边总数
 
                 # a. 坐标缩放
-                scaled_pos = scale_to_unit_sphere(clean_batch.pos, clean_batch.batch)
+                # scaled_pos = scale_to_unit_sphere(clean_batch.pos, clean_batch.batch)
+                scaled_pos = clean_batch.pos # 不进行坐标缩放
             
                 # b. 采样时间步和高斯噪声
                 # 为批次中的每一个图随机采样一个时间步 t1
