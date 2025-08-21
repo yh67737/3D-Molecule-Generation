@@ -51,6 +51,14 @@ class HierarchicalDiffusionScheduler:
         alpha_bar_at_T1 = self.alpha_bars_full[T1]
         self.delta_bars = alpha_bar_at_T1 * self.gamma_bars
 
+        min_val = 1e-7  # 这是一个可以调整的超参数，1e-7 或 1e-8 是一个不错的起点
+        
+        self.alpha_bars = torch.clamp(self.alpha_bars, min=min_val)
+        print(f"[Scheduler Fix] 'alpha_bars' has been clipped with a minimum value of {min_val}")
+
+        self.delta_bars = torch.clamp(self.delta_bars, min=min_val)
+        print(f"[Scheduler Fix] 'delta_bars' has been clipped with a minimum value of {min_val}")
+
         self.sqrt_alpha_bars = torch.sqrt(self.alpha_bars)
         self.sqrt_one_minus_alpha_bars = torch.sqrt(1.0 - self.alpha_bars)
         self.sqrt_delta_bars = torch.sqrt(self.delta_bars)

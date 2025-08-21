@@ -5,6 +5,7 @@ import math
 import torch
 import random
 import pickle
+import argparse
 import numpy as np
 from tqdm import tqdm
 from pathlib import Path
@@ -67,7 +68,7 @@ def setup_environment(args):
 
     # 日志
     logger = FileLogger(
-        output_dir=args.run_dir,
+        output_dir=args.generated_pyg_dir,
         is_master=is_main_process,
         is_rank0=is_main_process
     )
@@ -99,13 +100,23 @@ def main(args):
 
     # 模型实例化与加载
     model = E_DiT_Network(args).to(args.device)
-    model.load_state_dict(torch.load(args.model_ckpt, map_location=args.device))
+    # 1. 先加载整个 checkpoint 文件
+    checkpoint = torch.load(args.model_ckpt, map_location=args.device)
+    
+    # 2. 从 checkpoint 中提取出模型的状态字典
+    model_state_dict = checkpoint['model_state_dict']
+    
+    # 3. 加载模型的状态字典
+    model.load_state_dict(model_state_dict)
+    
     model.eval()
 
     p_model = RingPredictor(
         node_feature_dim=args.num_atom_types,
         edge_feature_dim=args.num_bond_types,
-        num_ring_classes=1
+        num_ring_classes=1,
+        hidden_nf=64,   # EGNN隐藏层维度
+        n_layers=4      # EGNN层数
     ).to(args.device)
     p_model.load_state_dict(torch.load(args.ring_guide_ckpt, map_location=args.device))
     p_model.eval()
@@ -129,6 +140,16 @@ def main(args):
         mol = generate_molecule(model, p_model, scheduler, args)
         molecules.append(mol)
 
+    # 1. 从模型路径中提取文件名 (例如: 'checkpoint_epoch_10.pth')
+    model_filename = os.path.basename(args.model_ckpt)
+    
+    # 2. 去掉文件扩展名 .pth，得到更有用的部分 (例如: 'checkpoint_epoch_10')
+    model_name_stem = os.path.splitext(model_filename)[0]
+    
+    # 3. 构建新的、包含模型信息的 pkl 文件名
+    #    格式：generated_molecules_from_checkpoint_epoch_10.pkl
+    output_pkl_filename = f"generated_molecules_from_{model_name_stem}.pkl"
+
     # 分布式收集所有分子，仅主进程保存
     if args.distributed:
         gathered = [None for _ in range(args.world_size)]
@@ -142,24 +163,89 @@ def main(args):
             # ✅ 截断
             all_molecules = all_molecules[:args.num_generate]
             
-            save_path = os.path.join(args.generated_pyg_dir, 'generated_molecules.pkl')
+            save_path = os.path.join(args.generated_pyg_dir, output_pkl_filename)
             with open(save_path, 'wb') as f:
                 pickle.dump(all_molecules, f)
             logger.info(f"✅ 所有进程生成完成，共 {len(all_molecules)} 个分子，保存至: {save_path}")
     else:
-        save_path = os.path.join(args.generated_pyg_dir, 'generated_molecules.pkl')
+        save_path = os.path.join(args.generated_pyg_dir, output_pkl_filename)
         with open(save_path, 'wb') as f:
             pickle.dump(molecules, f)
         logger.info(f"✅ 非分布式，共生成 {len(molecules)} 个分子，保存至: {save_path}")
 
 
+# if __name__ == '__main__':
+#     args = load_args('./saved_args/args_2025-08-16_12-43-43.pt')  # 修改
+
+#     # if args.output_dir:
+#     #     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+
+#     main(args)
+
 if __name__ == '__main__':
-    args = load_args('./saved_configs/args_.pt')  # 修改
+    # 1. 创建一个命令行解析器
+    parser = argparse.ArgumentParser()
+    
+    # 2. 添加你想从命令行控制的参数
+    #    - 首先，让参数文件的路径本身变成一个参数，这样更灵活！
+    parser.add_argument('--args_path', type=str, 
+                        default='./saved_args/args_2025-08-21_15-36-40.pt', 
+                        help='Path to the saved arguments .pt file')
+    
+    #    - 模型路径
+    parser.add_argument('--model_ckpt', type=str, 
+                        default='./output/2025-08-21_15-36-40/checkpoints/checkpoint_epoch_100.pth',
+                        help='Override the model checkpoint path from the args file.')
 
-    # if args.output_dir:
-    #     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+    #    - 生成分子的最大原子数 (default=None)
+    parser.add_argument('--max_atoms', type=int, 
+                        default=3, 
+                        help='(Optional) Override the maximum number of atoms per molecule.')
+    
+    #    - 生成分子的最小原子数 (default=None)
+    parser.add_argument('--min_atoms', type=int, 
+                        default=1, 
+                        help='(Optional) Override the minimum number of atoms before stopping.')
 
+    #    - 要生成的分子总数 (default=None)
+    parser.add_argument('--num_generate', type=int, 
+                        default=2, 
+                        help='(Optional) Override the total number of molecules to generate.')
+    # --------------------------------
+
+    # 3. 解析来自命令行的参数
+    cli_args = parser.parse_args()
+
+    # 4. 先从文件加载基础参数
+    args = load_args(cli_args.args_path)
+    print(f"原始模型路径 (from file): {args.model_ckpt}")
+
+    # 5. 用命令行参数覆盖文件中的参数（如果提供了的话）
+    override_count = 0
+    if cli_args.model_ckpt is not None:
+        args.model_ckpt = cli_args.model_ckpt
+        print(f"✅ 'model_ckpt' overridden to: {args.model_ckpt}")
+        override_count += 1
+        
+    if cli_args.max_atoms is not None:
+        args.max_atoms = cli_args.max_atoms
+        print(f"✅ 'max_atoms' overridden to: {args.max_atoms}")
+        override_count += 1
+
+    if cli_args.min_atoms is not None:
+        args.min_atoms = cli_args.min_atoms
+        print(f"✅ 'min_atoms' overridden to: {args.min_atoms}")
+        override_count += 1
+
+    if cli_args.num_generate is not None:
+        args.num_generate = cli_args.num_generate
+        print(f"✅ 'num_generate' overridden to: {args.num_generate}")
+        override_count += 1
+    
+    if override_count == 0:
+        print("No parameters overridden, using all values from the loaded args file.")
+
+    # 6. 使用最终确定的参数运行主函数
     main(args)
-
 
 # torchrun --nproc_per_node=4 main_generate.py --distributed

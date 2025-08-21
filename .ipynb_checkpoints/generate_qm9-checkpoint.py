@@ -204,12 +204,6 @@ def generate_molecule(
             pred_logits_a = predictions['atom_type_logits']
             pred_logits_b = predictions['bond_logits']
 
-            if t_gen % 20 == 0:
-                with torch.no_grad():
-                    pos_norm = torch.linalg.norm(denoising_data.pos[target_node_mask], dim=-1).mean()
-                    noise_norm = torch.linalg.norm(pred_noise, dim=-1).mean()
-                    print(f"\n  [T2={t_gen:04d}] Pos Norm: {pos_norm:.4f}, Predicted Noise Norm: {noise_norm:.4f}")
-
             # # 进行一步采样
             # # a. 坐标采样
             # pred_noise = scheduler.get_predicted_noise_from_r0(
@@ -219,34 +213,18 @@ def generate_molecule(
             #     schedule_type='delta'
             # )
             
-            # # DDPM 采样公式
-            # c1 = 1.0 / torch.sqrt(scheduler.gammas[t])
-            # c2 = (1.0 - scheduler.gammas[t]) / torch.sqrt(1.0 - scheduler.delta_bars[t])
+            # DDPM 采样公式
+            c1 = 1.0 / torch.sqrt(scheduler.gammas[t])
+            c2 = (1.0 - scheduler.gammas[t]) / torch.sqrt(1.0 - scheduler.delta_bars[t])
             
-            # pos_mean = c1 * (denoising_data.pos[target_node_mask] - c2 * pred_noise)
+            pos_mean = c1 * (denoising_data.pos[target_node_mask] - c2 * pred_noise)
             
-            # if t_gen > 1:
-            #     noise = torch.randn_like(pos_mean)
-            #     sigma_t = torch.sqrt(scheduler.posterior_variance_delta[t])
-            #     pos_t_minus_1 = pos_mean + sigma_t * noise
-            # else:
-            #     pos_t_minus_1 = pos_mean
-
-            #DDIM采样实现
-            alpha_bar_t = scheduler.delta_bars[t]
-            alpha_bar_t_minus_1 = scheduler.delta_bars[t-1] if t_gen > 1 else torch.tensor(1.0, device=device)
-            
-            x_t = denoising_data.pos[target_node_mask]
-            
-            # 第一步: 计算预测的 x0
-            c1 = torch.sqrt(1.0 - alpha_bar_t)
-            c2 = torch.sqrt(alpha_bar_t)
-            predicted_x0 = (x_t - c1 * pred_noise) / c2
-            
-            # 第二步: 计算 x_{t-1}
-            c3 = torch.sqrt(alpha_bar_t_minus_1)
-            c4 = torch.sqrt(1.0 - alpha_bar_t_minus_1)
-            pos_t_minus_1 = c3 * predicted_x0 + c4 * pred_noise
+            if t_gen > 1:
+                noise = torch.randn_like(pos_mean)
+                sigma_t = torch.sqrt(scheduler.posterior_variance_delta[t])
+                pos_t_minus_1 = pos_mean + sigma_t * noise
+            else:
+                pos_t_minus_1 = pos_mean
 
             # b. 原子类型和边属性采样
             atom_type_t_minus_1 = scheduler.compute_discrete_t_minus_1(
@@ -289,43 +267,19 @@ def generate_molecule(
             pred_noise = predictions['predicted_r0']
             pred_logits_a = predictions['atom_type_logits']
             pred_logits_b = predictions['bond_logits']
-
-            if t_gen % 20 == 0:
-                with torch.no_grad():
-                    pos_norm = torch.linalg.norm(fragment.pos, dim=-1).mean()
-                    noise_norm = torch.linalg.norm(pred_noise, dim=-1).mean()
-                    print(f"\n  [T1={t_gen:04d}] Pos Norm: {pos_norm:.4f}, Predicted Noise Norm: {noise_norm:.4f}")
-                    
             
             # # 全局采样
             # pred_noise = scheduler.get_predicted_noise_from_r0(fragment.pos, t.expand(fragment.num_nodes), pred_r0, 'alpha')
+            c1 = 1.0 / torch.sqrt(scheduler.alphas[t])
+            c2 = (1.0 - scheduler.alphas[t]) / torch.sqrt(1.0 - scheduler.alpha_bars[t])
+            pos_mean = c1 * (fragment.pos - c2 * pred_noise)
             
-            # c1 = 1.0 / torch.sqrt(scheduler.alphas[t])
-            # c2 = (1.0 - scheduler.alphas[t]) / torch.sqrt(1.0 - scheduler.alpha_bars[t])
-            # pos_mean = c1 * (fragment.pos - c2 * pred_noise)
-            
-            # if t_gen > 1:
-            #     noise = torch.randn_like(pos_mean)
-            #     sigma_t = torch.sqrt(scheduler.posterior_variance_alpha[t])
-            #     fragment.pos = pos_mean + sigma_t * noise
-            # else:
-            #     fragment.pos = pos_mean
-
-            #DDIM采样实现
-            alpha_bar_t = scheduler.alpha_bars[t]
-            alpha_bar_t_minus_1 = scheduler.alpha_bars[t-1] if t_gen > 1 else torch.tensor(1.0, device=device)
-            
-            x_t = fragment.pos
-            
-            c1 = torch.sqrt(1.0 - alpha_bar_t)
-            c2 = torch.sqrt(alpha_bar_t)
-            predicted_x0 = (x_t - c1 * pred_noise) / c2
-            
-            c3 = torch.sqrt(alpha_bar_t_minus_1)
-            c4 = torch.sqrt(1.0 - alpha_bar_t_minus_1)
-            pos_t_minus_1 = c3 * predicted_x0 + c4 * pred_noise
-            
-            fragment.pos = pos_t_minus_1
+            if t_gen > 1:
+                noise = torch.randn_like(pos_mean)
+                sigma_t = torch.sqrt(scheduler.posterior_variance_alpha[t])
+                fragment.pos = pos_mean + sigma_t * noise
+            else:
+                fragment.pos = pos_mean
             
             fragment.x = scheduler.compute_discrete_t_minus_1(            
                 x_t=fragment.x[target_node_mask],
