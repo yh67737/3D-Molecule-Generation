@@ -21,6 +21,20 @@ class HierarchicalDiffusionScheduler:
         T2: int ,
         s: float ,
         device: str
+        schedule_type: str = 'cosine',  # 'sigmoid' 或 'cosine' 或 'edm_quadratic'
+        # Sigmoid 调度参数 (MolDiff 使用)
+        # alpha/atom 调度的参数
+        s1_alpha: float = 0.9999,
+        sT_alpha: float = 0.0001,
+        w_alpha: float = 3.0,
+        # gamma/bond 调度的参数 (MolDiff中bond的调度是分段的，这里简化为单段)
+        s1_gamma: float = 0.9999,
+        sT_gamma: float = 0.0001,
+        w_gamma: float = 3.0,
+        # Cosine 调度参数
+        # s: float = 0.008,  # 已作为参数输入
+        # EDM Quadratic 调度参数
+        s_quadratic: float = 1e-5
     ):
         """
         Args:
@@ -31,6 +45,11 @@ class HierarchicalDiffusionScheduler:
             T2 (int):     'gamma'/'delta' 调度的步数。
             s (float):    Cosine schedule 的偏移量。
             device (str): 计算所在的设备。
+            schedule_type (str): 'sigmoid', 'cosine', 或 'edm_quadratic'。
+            s1_alpha, sT_alpha, w_alpha (float): Sigmoid调度中alpha曲线的参数。
+            s1_gamma, sT_gamma, w_gamma (float): Sigmoid调度中gamma曲线的参数。
+            s_cosine (float): Cosine schedule 的偏移量。
+            s_quadratic (float): EDM Quadratic schedule 的精度参数。
         """
         self.num_atom_types = num_atom_types
         self.num_bond_types = num_bond_types
@@ -40,13 +59,78 @@ class HierarchicalDiffusionScheduler:
         self.s = s
         self.device = torch.device(device)
 
-        # --- 1. 计算坐标加噪的 alpha_bar 和 delta_bar ---
-        t_alpha = torch.linspace(0, T_full, T_full + 1, device=self.device)
-        self.alpha_bars_full = self._cosine_schedule(t_alpha, T_full, s)
-        self.alpha_bars = self.alpha_bars_full[:T1 + 1]
+        # # --- 1. 计算坐标加噪的 alpha_bar 和 delta_bar ---
+        # t_alpha = torch.linspace(0, T_full, T_full + 1, device=self.device)
+        # self.alpha_bars_full = self._cosine_schedule(t_alpha, T_full, s)
+        # self.alpha_bars = self.alpha_bars_full[:T1 + 1]
 
+        # t_gamma = torch.linspace(0, T2, T2 + 1, device=self.device)
+        # self.gamma_bars = self._cosine_schedule(t_gamma, T2, s)
+
+        # alpha_bar_at_T1 = self.alpha_bars_full[T1]
+        # self.delta_bars = alpha_bar_at_T1 * self.gamma_bars
+
+        # min_val = 1e-7  # 这是一个可以调整的超参数，1e-7 或 1e-8 是一个不错的起点
+        
+        # self.alpha_bars = torch.clamp(self.alpha_bars, min=min_val)
+        # print(f"[Scheduler Fix] 'alpha_bars' has been clipped with a minimum value of {min_val}")
+
+        # self.delta_bars = torch.clamp(self.delta_bars, min=min_val)
+        # print(f"[Scheduler Fix] 'delta_bars' has been clipped with a minimum value of {min_val}")
+
+        # self.sqrt_alpha_bars = torch.sqrt(self.alpha_bars)
+        # self.sqrt_one_minus_alpha_bars = torch.sqrt(1.0 - self.alpha_bars)
+        # self.sqrt_delta_bars = torch.sqrt(self.delta_bars)
+        # self.sqrt_one_minus_delta_bars = torch.sqrt(1.0 - self.delta_bars)
+
+        # # 完整调度
+        # self.alphas_full = self.alpha_bars_full / torch.cat([torch.tensor([1.0], device=self.device), self.alpha_bars_full[:-1]])
+        # self.betas_full = 1.0 - self.alphas_full
+        
+        # # T1 调度
+        # self.alphas = self.alpha_bars / torch.cat([torch.tensor([1.0], device=self.device), self.alpha_bars[:-1]])
+        # self.betas = 1.0 - self.alphas
+        
+        # # T2/gamma 调度
+        # self.gammas = self.gamma_bars / torch.cat([torch.tensor([1.0], device=self.device), self.gamma_bars[:-1]])
+        # self.gamma_betas = 1.0 - self.gammas # 这是公式中的 (1-gamma_t)
+
+        # # 预计算 sigma_t^2 的两个部分
+        # # 用于 alpha 调度
+        # self.posterior_variance_alpha = self.betas 
+        # # 用于 delta 调度 
+        # self.posterior_variance_delta = self.gamma_betas
+
+        # --- 1. 计算坐标加噪的 alpha_bar 和 delta_bar ---
+        
+        t_alpha_full = torch.linspace(0, T_full, T_full + 1, device=self.device)
         t_gamma = torch.linspace(0, T2, T2 + 1, device=self.device)
-        self.gamma_bars = self._cosine_schedule(t_gamma, T2, s)
+
+        if self.schedule_type == 'sigmoid':
+            print("[Scheduler] Using Sigmoid schedule.")
+            self.alpha_bars_full = self._sigmoid_schedule(t_alpha_full, T_full, s1_alpha, sT_alpha, w_alpha)
+            self.gamma_bars = self._sigmoid_schedule(t_gamma, T2, s1_gamma, sT_gamma, w_gamma)
+        elif self.schedule_type == 'cosine':
+            print("[Scheduler] Using Cosine schedule.")
+            self.s = s
+            self.alpha_bars_full = self._cosine_schedule(t_alpha_full, T_full, s)
+            self.gamma_bars = self._cosine_schedule(t_gamma, T2, s)
+        elif self.schedule_type == 'edm_quadratic':
+            print("[Scheduler] Using EDM's Quadratic schedule.")
+            alpha_bars_full_unclamped = self._edm_quadratic_schedule(t_alpha_full, T_full, s_quadratic)
+            self.gamma_bars = self._edm_quadratic_schedule(t_gamma, T2, s_quadratic)
+            # EDM调度直接定义alpha_t，需要计算累积乘积alpha_bar
+            # alpha_t(0) = 1.0 (根据论文定义，t=0时没有噪声)
+            alphas_t = torch.cat([torch.tensor([1.0], device=self.device), alpha_bars_full_unclamped[1:]])
+            self.alpha_bars_full = torch.cumprod(alphas_t, dim=0)
+            # 同样为 gamma 计算
+            gammas_t = torch.cat([torch.tensor([1.0], device=self.device), self.gamma_bars[1:]])
+            self.gamma_bars = torch.cumprod(gammas_t, dim=0)
+        else:
+            raise ValueError(f"Unknown schedule type: {schedule_type}. Choose 'sigmoid' or 'cosine'.")
+
+
+        self.alpha_bars = self.alpha_bars_full[:T1 + 1]
 
         alpha_bar_at_T1 = self.alpha_bars_full[T1]
         self.delta_bars = alpha_bar_at_T1 * self.gamma_bars
@@ -89,6 +173,39 @@ class HierarchicalDiffusionScheduler:
         self.Q_bar_alpha_b = self._calculate_absorbing_q_bar(self.alpha_bars, self.num_bond_types)
         self.Q_bar_gamma_b = self._calculate_absorbing_q_bar(self.gamma_bars, self.num_bond_types)
 
+    def _edm_quadratic_schedule(self, t, T, s_precision):
+        """
+        EDM 论文中自定义的二次方调度。
+        注意：这个方法返回的是 alpha_t (单步)，而不是 alpha_bar_t (累积)。
+        """
+        if T == 0: return torch.tensor([1.0 - s_precision], device=self.device)
+        
+        f_t = 1.0 - (t / T)**2
+        alpha_t = (1 - 2 * s_precision) * f_t + s_precision
+        
+        # 确保 alpha_t(0) 接近 1, alpha_t(T) 接近 0
+        return alpha_t
+
+    def _sigmoid_schedule(self, t, T, s1, sT, w):
+        """
+        MolDiff 使用的可调节 Sigmoid 调度。
+        """
+        if T == 0: return torch.tensor([s1], device=self.device) # 处理 T=0 的边缘情况
+        
+        # 防止 sigmoid(-w) - sigmoid(w) 除零
+        sigmoid_w_diff = torch.sigmoid(torch.tensor(-w, device=self.device)) - torch.sigmoid(torch.tensor(w, device=self.device))
+        if torch.abs(sigmoid_w_diff) < 1e-7:
+            sigmoid_w_diff = 1e-7 if sigmoid_w_diff > 0 else -1e-7
+
+        s_param = (sT - s1) / sigmoid_w_diff
+        b_param = 0.5 * (s1 + sT - s_param)
+        
+        # t/T 的范围是 [0, 1]，我们需要将其映射到 [-w, w] 的输入范围
+        # MolDiff 的公式是 -w * (2t/T - 1)
+        sigmoid_input = -w * (2 * t / T - 1)
+        
+        alpha_bar_t = s_param * torch.sigmoid(sigmoid_input) + b_param
+        return alpha_bar_t
 
     def _cosine_schedule(self, t, T, s):
         steps = t / T
