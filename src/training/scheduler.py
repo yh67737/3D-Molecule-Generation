@@ -20,7 +20,7 @@ class HierarchicalDiffusionScheduler:
         T1: int ,
         T2: int ,
         s: float ,
-        device: str
+        device: str ,
         schedule_type: str = 'cosine',  # 'sigmoid' 或 'cosine' 或 'edm_quadratic'
         # Sigmoid 调度参数 (MolDiff 使用)
         # alpha/atom 调度的参数
@@ -58,6 +58,7 @@ class HierarchicalDiffusionScheduler:
         self.T2 = T2
         self.s = s
         self.device = torch.device(device)
+        self.schedule_type = schedule_type
 
         # # --- 1. 计算坐标加噪的 alpha_bar 和 delta_bar ---
         # t_alpha = torch.linspace(0, T_full, T_full + 1, device=self.device)
