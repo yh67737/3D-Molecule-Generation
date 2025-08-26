@@ -96,6 +96,12 @@ class MultiTaskHead(nn.Module):
         
         # a. 计算当前加噪坐标的相对位置向量
         coord_diff = r_t_final[row] - r_t_final[col]
+
+        # a.1 计算原子间的距离，并添加一个小的 epsilon 防止梯度问题
+        distance = torch.linalg.norm(coord_diff, dim=1, keepdim=True) + 1e-8
+        
+        # a.2 归一化相对位置向量
+        coord_diff_normalized = coord_diff / distance
         
         # b. 使用节点特征计算每条边上的交互标量
         interaction_scalars = self.coord_head_tp(h_final[row], h_final[col])
@@ -107,7 +113,7 @@ class MultiTaskHead(nn.Module):
         weights = self.coord_scalar_mlp(coord_head_input)
         
         # e. 用权重缩放相对位置向量，得到每条边的噪声贡献
-        noise_contribution = coord_diff * weights
+        noise_contribution = coord_diff_normalized * weights
         
         # f. 使用 scatter_sum 聚合每个节点的总噪声贡献
         #    注意：我们将贡献聚合到 `row` 节点上

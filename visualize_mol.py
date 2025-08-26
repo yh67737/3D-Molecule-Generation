@@ -181,7 +181,7 @@ if __name__ == '__main__':
     
     # 1. 输入文件
     model_name_stem = 'best_model'
-    pkl_file_path = f'output/2025-08-21_15-36-40/generated_pyg/generated_molecules_from_{model_name_stem}.pkl'
+    pkl_file_path = f'output/2025-08-23_02-23-39/generated_pyg/generated_molecules_from_{model_name_stem}.pkl'
     
     # 2. 输出目录
     # 将所有输出文件保存在一个与 pkl 文件相关的文件夹中

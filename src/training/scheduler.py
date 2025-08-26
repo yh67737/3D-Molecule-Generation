@@ -21,7 +21,7 @@ class HierarchicalDiffusionScheduler:
         T2: int ,
         s: float ,
         device: str ,
-        schedule_type: str = 'cosine',  # 'sigmoid' 或 'cosine' 或 'edm_quadratic'
+        schedule_type: str = 'sigmoid',  # 'sigmoid' 或 'cosine' 或 'edm_quadratic'
         # Sigmoid 调度参数 (MolDiff 使用)
         # alpha/atom 调度的参数
         s1_alpha: float = 0.9999,

@@ -204,7 +204,7 @@ def generate_molecule(
             pred_logits_a = predictions['atom_type_logits']
             pred_logits_b = predictions['bond_logits']
 
-            if t_gen % 20 == 0:
+            if t_gen % 2 == 0:
                 with torch.no_grad():
                     pos_norm = torch.linalg.norm(denoising_data.pos[target_node_mask], dim=-1).mean()
                     noise_norm = torch.linalg.norm(pred_noise, dim=-1).mean()
@@ -290,7 +290,7 @@ def generate_molecule(
             pred_logits_a = predictions['atom_type_logits']
             pred_logits_b = predictions['bond_logits']
 
-            if t_gen % 20 == 0:
+            if t_gen % 2 == 0:
                 with torch.no_grad():
                     pos_norm = torch.linalg.norm(fragment.pos, dim=-1).mean()
                     noise_norm = torch.linalg.norm(pred_noise, dim=-1).mean()

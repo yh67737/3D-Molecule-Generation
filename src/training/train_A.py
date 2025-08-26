@@ -183,8 +183,8 @@ def calculate_atom_type_loss(
     
 #     return loss
 def calculate_coordinate_loss_wrapper(
-    predicted_noise: torch.Tensor,   # 模型预测的噪声, shape [M, 3]
-    true_noise: torch.Tensor,        # 用于生成 r_t 的真实高斯噪声, shape [M, 3]
+    predicted_x0: torch.Tensor,      # 模型预测的干净坐标 (t=0), shape [M, 3]
+    true_x0: torch.Tensor,           # 真实的干净坐标 (t=0), shape [M, 3]
     r_t: torch.Tensor,               # 输入到模型的加噪坐标 (t>0), shape [M, 3]
     t: torch.Tensor,                 # 每个坐标对应的时间步, shape [M]
     scheduler,                       # HierarchicalDiffusionScheduler 实例
@@ -196,24 +196,18 @@ def calculate_coordinate_loss_wrapper(
     这是一个包装函数，它接收模型预测的噪声，然后计算与真实噪声的 L2 损失。
 
     Args:
-        predicted_noise: 模型预测的噪声。
-        true_noise: 真实的噪声。
-        r_t: 加噪后的坐标。
-        t: 时间步。
-        scheduler: 噪声调度器实例。
-        schedule_type: 使用的调度类型 ('alpha' 或 'delta')。
+        predicted_x0: 模型预测的干净坐标 x0。
+        true_x0: 真实的干净坐标 x0。
 
     Returns:
         torch.Tensor: 计算出的标量损失值。
     """
     # 1. 检查输入是否为空。
-    # 在策略II中，如果目标原子被某种方式移除了（虽然不太可能），这可以防止出错。
-    if predicted_noise.shape[0] == 0:
-        return torch.tensor(0.0, device=predicted_noise.device)
+    if predicted_x0.shape[0] == 0:
+        return torch.tensor(0.0, device=predicted_x0.device)
 
-    # 2. 计算预测噪声和真实噪声之间的 L2 损失 (均方误差, Mean Squared Error)
-    # F.mse_loss(A, B) 会计算 (A - B)^2 的所有元素的平均值。
-    loss = F.mse_loss(predicted_noise, true_noise)
+    # 2. 计算预测的 x0 和真实的 x0 之间的 L2 损失 (均方误差, Mean Squared Error)
+    loss = F.mse_loss(predicted_x0, true_x0)
 
     return loss
 
@@ -306,7 +300,7 @@ def validate(val_loader, model, s_model, scheduler, args, amp_autocast, fragment
         predictions_I = model(noised_data_I, t1, target_node_mask_I, target_edge_mask_I)
 
         lossI_a = calculate_atom_type_loss(predictions_I['atom_type_logits'], clean_batch.x.argmax(dim=-1), args.lambda_aux)
-        lossI_r = calculate_coordinate_loss_wrapper(predictions_I['predicted_r0'], noise1, noised_pos_I, t1_per_node, scheduler, 'alpha')
+        lossI_r = calculate_coordinate_loss_wrapper(predictions_I['predicted_r0'], scaled_pos, noised_pos_I, t1_per_node, scheduler, 'alpha')
         lossI_b = calculate_bond_type_loss(predictions_I['bond_logits'], clean_batch.edge_attr.argmax(dim=-1), args.lambda_aux)
         loss_I = args.w_a * lossI_a + args.w_r * lossI_r + args.w_b * lossI_b
 
@@ -336,12 +330,13 @@ def validate(val_loader, model, s_model, scheduler, args, amp_autocast, fragment
         predictions_II = model(noised_data_II, t2, target_node_mask_II, target_edge_mask)
 
         lossII_a = calculate_atom_type_loss(predictions_II['atom_type_logits'], clean_batch.x[target_node_mask_II].argmax(dim=-1),  args.lambda_aux)
-        lossII_r = calculate_coordinate_loss_wrapper(predictions_II['predicted_r0'], noise2[target_node_mask_II], noised_pos_target, t2_per_node[target_node_mask_II], scheduler, 'delta')
+        lossII_r = calculate_coordinate_loss_wrapper(predictions_II['predicted_r0'], scaled_pos[target_node_mask_II], noised_pos_target, t2_per_node[target_node_mask_II], scheduler, 'delta')
         lossII_b = calculate_bond_type_loss(predictions_II['bond_logits'], clean_batch.edge_attr[target_edge_mask].argmax(dim=-1), args.lambda_aux)
         loss_II = args.w_a * lossII_a + args.w_r * lossII_r + args.w_b * lossII_b
 
         # --- 总验证损失 ---
-        total_loss = scheduler.T1 * loss_I + scheduler.T2 * loss_II
+        # total_loss = scheduler.T1 * loss_I + scheduler.T2 * loss_II
+        total_loss = loss_I + loss_II
 
         reward = (-total_loss - log_prob_orders).detach()  # 奖励必须从计算图中分离，不带梯度
 
@@ -540,8 +535,8 @@ def train(
                     args.lambda_aux
                 )
                 lossI_r = calculate_coordinate_loss_wrapper(
-                    predicted_noise=predictions_I['predicted_r0'],
-                    true_noise=noise1,
+                    predicted_x0=predictions_I['predicted_r0'],
+                    true_x0=scaled_pos,
                     r_t=noised_pos_I,
                     t=t1_per_node,
                     scheduler=scheduler,
@@ -621,8 +616,8 @@ def train(
                     args.lambda_aux
                 )
                 lossII_r = calculate_coordinate_loss_wrapper(
-                    predicted_noise=predictions_II['predicted_r0'],
-                    true_noise=noise2[target_node_mask_II],
+                    predicted_x0=predictions_II['predicted_r0'],
+                    true_x0=scaled_pos[target_node_mask_II],
                     r_t=noised_pos_target,
                     t=t2_per_node[target_node_mask_II],
                     scheduler=scheduler,
@@ -637,7 +632,8 @@ def train(
 
 
                 # --- 总损失与反向传播 ---
-                total_loss = scheduler.T1 * loss_I + scheduler.T2 * loss_II
+                # total_loss = scheduler.T1 * loss_I + scheduler.T2 * loss_II
+                total_loss = loss_I + loss_II
 
                  # 根据 OM 论文, 奖励 R(π) = log p_θ(G|π) - log q_φ(π|G)
                 # log p_θ(G|π) 由生成模型的负损失 -total_loss 近似
