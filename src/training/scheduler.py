@@ -174,6 +174,21 @@ class HierarchicalDiffusionScheduler:
         self.Q_bar_alpha_b = self._calculate_absorbing_q_bar(self.alpha_bars, self.num_bond_types)
         self.Q_bar_gamma_b = self._calculate_absorbing_q_bar(self.gamma_bars, self.num_bond_types)
 
+        # --- 3. 预计算连续坐标的后验系数 (DDPM-Posterior) ---
+        # 对于 alpha 日程
+        alpha_bar_prev_alpha = torch.cat([torch.tensor([1.0], device=self.device), self.alpha_bars[:-1]])
+        one_minus_alpha_bar_alpha = (1.0 - self.alpha_bars).clamp(min=1e-12)
+        self.coef_x0_alpha = (alpha_bar_prev_alpha.sqrt() * self.betas) / one_minus_alpha_bar_alpha
+        self.coef_xt_alpha = (self.alphas.sqrt() * (1.0 - alpha_bar_prev_alpha)) / one_minus_alpha_bar_alpha
+        self.std_alpha     = ((1.0 - alpha_bar_prev_alpha) * self.betas / one_minus_alpha_bar_alpha).clamp(min=0.).sqrt()
+
+        # 对于 delta 日程（阶段一）
+        delta_bar_prev = torch.cat([torch.tensor([1.0], device=self.device), self.delta_bars[:-1]])
+        one_minus_delta_bar = (1.0 - self.delta_bars).clamp(min=1e-12)
+        self.coef_x0_delta = (delta_bar_prev.sqrt() * self.gamma_betas) / one_minus_delta_bar
+        self.coef_xt_delta = (self.gammas.sqrt() * (1.0 - delta_bar_prev)) / one_minus_delta_bar
+        self.std_delta     = ((1.0 - delta_bar_prev) * self.gamma_betas / one_minus_delta_bar).clamp(min=0.).sqrt()
+
     def _edm_quadratic_schedule(self, t, T, s_precision):
         """
         EDM 论文中自定义的二次方调度。

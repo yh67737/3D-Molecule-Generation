@@ -200,15 +200,15 @@ def generate_molecule(
             
             # 模型前向传播，只预测目标
             predictions = model(denoising_data, t, target_node_mask, target_edge_mask)
-            pred_noise = predictions['predicted_r0']
+            pred_r0 = predictions['predicted_r0']
             pred_logits_a = predictions['atom_type_logits']
             pred_logits_b = predictions['bond_logits']
 
             if t_gen % 2 == 0:
                 with torch.no_grad():
                     pos_norm = torch.linalg.norm(denoising_data.pos[target_node_mask], dim=-1).mean()
-                    noise_norm = torch.linalg.norm(pred_noise, dim=-1).mean()
-                    print(f"\n  [T2={t_gen:04d}] Pos Norm: {pos_norm:.4f}, Predicted Noise Norm: {noise_norm:.4f}")
+                    pred_r0_norm = torch.linalg.norm(pred_r0, dim=-1).mean()
+                    print(f"\n  [T2={t_gen:04d}] Pos Norm: {pos_norm:.4f}, Predicted R0 Norm: {pred_r0_norm:.4f}")
 
             # # 进行一步采样
             # # a. 坐标采样
@@ -232,21 +232,37 @@ def generate_molecule(
             # else:
             #     pos_t_minus_1 = pos_mean
 
-            #DDIM采样实现
-            alpha_bar_t = scheduler.delta_bars[t]
-            alpha_bar_t_minus_1 = scheduler.delta_bars[t-1] if t_gen > 1 else torch.tensor(1.0, device=device)
+            # #DDIM采样实现
+            # alpha_bar_t = scheduler.delta_bars[t]
+            # alpha_bar_t_minus_1 = scheduler.delta_bars[t-1] if t_gen > 1 else torch.tensor(1.0, device=device)
             
+            # x_t = denoising_data.pos[target_node_mask]
+            
+            # # 第一步: 计算预测的 x0
+            # c1 = torch.sqrt(1.0 - alpha_bar_t)
+            # c2 = torch.sqrt(alpha_bar_t)
+            # predicted_x0 = (x_t - c1 * pred_noise) / c2
+            
+            # # 第二步: 计算 x_{t-1}
+            # c3 = torch.sqrt(alpha_bar_t_minus_1)
+            # c4 = torch.sqrt(1.0 - alpha_bar_t_minus_1)
+            # pos_t_minus_1 = c3 * predicted_x0 + c4 * pred_noise
+
+            # 采用 DDPM 后验采样：mu + sigma * eps，其中 x_recon = 第0步坐标
             x_t = denoising_data.pos[target_node_mask]
-            
-            # 第一步: 计算预测的 x0
-            c1 = torch.sqrt(1.0 - alpha_bar_t)
-            c2 = torch.sqrt(alpha_bar_t)
-            predicted_x0 = (x_t - c1 * pred_noise) / c2
-            
-            # 第二步: 计算 x_{t-1}
-            c3 = torch.sqrt(alpha_bar_t_minus_1)
-            c4 = torch.sqrt(1.0 - alpha_bar_t_minus_1)
-            pos_t_minus_1 = c3 * predicted_x0 + c4 * pred_noise
+            x_recon = pred_r0  # 这里的 predicted_r0 已经是 x0（你已改为预测第0步坐标）
+            t_batch = t.expand(target_node_mask.sum()).long()
+
+            coef_x0 = scheduler.coef_x0_delta[t_batch].unsqueeze(-1)
+            coef_xt = scheduler.coef_xt_delta[t_batch].unsqueeze(-1)
+            sigma   = scheduler.std_delta[t_batch].unsqueeze(-1)
+
+            mu = coef_x0 * x_recon + coef_xt * x_t
+            if t_gen > 1:
+                eps = torch.randn_like(mu)
+                pos_t_minus_1 = mu + sigma * eps
+            else:
+                pos_t_minus_1 = mu  # 最后一步不加噪声
 
             # b. 原子类型和边属性采样
             atom_type_t_minus_1 = scheduler.compute_discrete_t_minus_1(
@@ -286,17 +302,16 @@ def generate_molecule(
             target_edge_mask = torch.ones(fragment.num_edges, dtype=torch.bool, device=device)
             
             predictions = model(fragment, t, target_node_mask, target_edge_mask)
-            pred_noise = predictions['predicted_r0']
+            pred_r0 = predictions['predicted_r0']
             pred_logits_a = predictions['atom_type_logits']
             pred_logits_b = predictions['bond_logits']
 
             if t_gen % 2 == 0:
                 with torch.no_grad():
                     pos_norm = torch.linalg.norm(fragment.pos, dim=-1).mean()
-                    noise_norm = torch.linalg.norm(pred_noise, dim=-1).mean()
-                    print(f"\n  [T1={t_gen:04d}] Pos Norm: {pos_norm:.4f}, Predicted Noise Norm: {noise_norm:.4f}")
-                    
-            
+                    pred_r0_norm = torch.linalg.norm(pred_r0, dim=-1).mean()
+                    print(f"\n  [T1={t_gen:04d}] Pos Norm: {pos_norm:.4f}, Predicted R0 Norm: {pred_r0_norm:.4f}")
+
             # # 全局采样
             # pred_noise = scheduler.get_predicted_noise_from_r0(fragment.pos, t.expand(fragment.num_nodes), pred_r0, 'alpha')
             
@@ -311,19 +326,35 @@ def generate_molecule(
             # else:
             #     fragment.pos = pos_mean
 
-            #DDIM采样实现
-            alpha_bar_t = scheduler.alpha_bars[t]
-            alpha_bar_t_minus_1 = scheduler.alpha_bars[t-1] if t_gen > 1 else torch.tensor(1.0, device=device)
+            # #DDIM采样实现
+            # alpha_bar_t = scheduler.alpha_bars[t]
+            # alpha_bar_t_minus_1 = scheduler.alpha_bars[t-1] if t_gen > 1 else torch.tensor(1.0, device=device)
             
+            # x_t = fragment.pos
+            
+            # c1 = torch.sqrt(1.0 - alpha_bar_t)
+            # c2 = torch.sqrt(alpha_bar_t)
+            # predicted_x0 = (x_t - c1 * pred_noise) / c2
+            
+            # c3 = torch.sqrt(alpha_bar_t_minus_1)
+            # c4 = torch.sqrt(1.0 - alpha_bar_t_minus_1)
+            # pos_t_minus_1 = c3 * predicted_x0 + c4 * pred_noise
+
+            # 采用 DDPM 后验采样：mu + sigma * eps，其中 x_recon = 第0步坐标
             x_t = fragment.pos
-            
-            c1 = torch.sqrt(1.0 - alpha_bar_t)
-            c2 = torch.sqrt(alpha_bar_t)
-            predicted_x0 = (x_t - c1 * pred_noise) / c2
-            
-            c3 = torch.sqrt(alpha_bar_t_minus_1)
-            c4 = torch.sqrt(1.0 - alpha_bar_t_minus_1)
-            pos_t_minus_1 = c3 * predicted_x0 + c4 * pred_noise
+            x_recon = pred_r0  # 这里的 predicted_r0 已经是 x0
+            t_batch = t.expand(fragment.num_nodes).long()
+
+            coef_x0 = scheduler.coef_x0_alpha[t_batch].unsqueeze(-1)
+            coef_xt = scheduler.coef_xt_alpha[t_batch].unsqueeze(-1)
+            sigma   = scheduler.std_alpha[t_batch].unsqueeze(-1)
+
+            mu = coef_x0 * x_recon + coef_xt * x_t
+            if t_gen > 1:
+                eps = torch.randn_like(mu)
+                pos_t_minus_1 = mu + sigma * eps
+            else:
+                pos_t_minus_1 = mu  # 最后一步不加噪声
             
             fragment.pos = pos_t_minus_1
             
