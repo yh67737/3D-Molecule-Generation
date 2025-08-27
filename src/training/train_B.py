@@ -386,7 +386,7 @@ def train(
 
     T_max = args.epochs  # 最大迭代次数，通常设置为总 epoch 数
     lr_min_factor = args.lr_min_factor
-    scheduler_model = CosineAnnealingLR(optimizer, T_max=T_max, eta_min=lr_min_factor * args.learning_rate)
+    lr_scheduler = CosineAnnealingLR(optimizer, T_max=T_max, eta_min=lr_min_factor * args.learning_rate)
 
     best_val_loss = float('inf')
     best_epoch = 0
@@ -681,12 +681,16 @@ def train(
         avg_lossII_r = total_lossII_r_epoch / num_batches
         avg_lossII_b = total_lossII_b_epoch / num_batches
 
+        # 获取当前学习率
+        current_lr = optimizer.param_groups[0]['lr']
+
         # 构建日志字符串
         log_str = (
             f"  -> Loss Details: loss={avg_real_train_loss:.2e}, " # 使用科学计数法
             f"loss_I={avg_loss_I:.2f}, loss_II={avg_loss_II:.2f}, "
             f"lossI_a={avg_lossI_a:.2f}, lossI_r={avg_lossI_r:.2f}, lossI_b={avg_lossI_b:.2f}, "
-            f"lossII_a={avg_lossII_a:.2f}, lossII_r={avg_lossII_r:.2f}, lossII_b={avg_lossII_b:.2f}"
+            f"lossII_a={avg_lossII_a:.2f}, lossII_r={avg_lossII_r:.2f}, lossII_b={avg_lossII_b:.2f},"
+            f"lr={current_lr:.2e}"  # 在日志中添加学习率
         )
         logger.info(log_str)
 
@@ -707,7 +711,7 @@ def train(
                 'epoch': epoch,
                 'model_state_dict': model_state_to_save,
                 'optimizer_model_state_dict': optimizer.state_dict(),
-                'scheduler_model_state_dict': scheduler_model.state_dict(),
+                'scheduler_model_state_dict': lr_scheduler.state_dict(),
                 'validation_loss': avg_val_loss, # <-- 明确保存当前 epoch 的验证损失
                 'args': args
             }
@@ -739,7 +743,7 @@ def train(
                 best_model_path = os.path.join(args.checkpoints_dir, 'best_model.pth')
                 torch.save(best_model_state, best_model_path)
         # 更新学习率调度器
-        scheduler_model.step()
+        lr_scheduler.step()
             
     logger.info("训练完成。")
     logger.info(f"最终，最佳模型发现在 Epoch {best_epoch}，验证损失为: {best_val_loss:.4f}")
