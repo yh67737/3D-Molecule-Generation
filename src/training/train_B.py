@@ -494,9 +494,12 @@ def train(
                     clean_batch.x.argmax(dim=-1),  # 从 One-Hot 编码的特征张量中，提取出每个项目对应的类别索引 (class index)
                     args.lambda_aux
                 )
+
+                pos_noise_I = torch.randn_like(scaled_pos) * args.pos_noise_std
+
                 lossI_r = calculate_coordinate_loss_wrapper(
                     predicted_x0=predictions_I['predicted_r0'], 
-                    true_x0=scaled_pos, 
+                    true_x0=scaled_pos + pos_noise_I, 
                     r_t=noised_pos_I, 
                     t=t1_per_node, 
                     scheduler=scheduler, 
@@ -606,9 +609,12 @@ def train(
                     clean_batch.x[target_node_mask_II].argmax(dim=-1),
                     args.lambda_aux
                 )
+
+                pos_noise_II = torch.randn_like(scaled_pos[target_node_mask_II]) * args.pos_noise_std
+
                 lossII_r = calculate_coordinate_loss_wrapper(
                     predicted_x0=predictions_II['predicted_r0'], 
-                    true_x0=scaled_pos[target_node_mask_II], 
+                    true_x0=scaled_pos[target_node_mask_II] + pos_noise_II, 
                     r_t=noised_pos_target, 
                     t=t2_per_node[target_node_mask_II], 
                     scheduler=scheduler, 
