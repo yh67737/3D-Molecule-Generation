@@ -5,6 +5,7 @@ import torch.nn.functional as F
 import os
 # from torch.optim.lr_scheduler import ReduceLROnPlateau # <-- 新增: 导入学习率调度器
 from torch.optim.lr_scheduler import CosineAnnealingLR  # 导入 CosineAnnealingLR
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts # 需要导入新的类
 from torch_geometric.utils import scatter
 
 # 假设模型和调度器已经定义好
@@ -336,7 +337,10 @@ def validate(val_loader, model, s_model, scheduler, args, amp_autocast, fragment
 
         # --- 总验证损失 ---
         # total_loss = scheduler.T1 * loss_I + scheduler.T2 * loss_II
-        total_loss = loss_I + loss_II
+        # 计算分母
+        denominator = scheduler.T1 + scheduler.T2
+        # 计算加权损失
+        total_loss = (scheduler.T1 / denominator) * loss_I + (scheduler.T2 / denominator) * loss_II
 
         reward = (-total_loss - log_prob_orders).detach()  # 奖励必须从计算图中分离，不带梯度
 
@@ -419,8 +423,20 @@ def train(
     # 创建 CosineAnnealingLR 调度器
     T_max = args.epochs  # 最大迭代次数，通常设置为总 epoch 数
     lr_min_factor = args.lr_min_factor
-    scheduler_model = CosineAnnealingLR(optimizer_model, T_max=T_max, eta_min=lr_min_factor * args.learning_rate)
-    scheduler_s_model = CosineAnnealingLR(optimizer_s_model, T_max=T_max, eta_min=lr_min_factor * args.s_learning_rate)
+    # scheduler_model = CosineAnnealingLR(optimizer_model, T_max=T_max, eta_min=lr_min_factor * args.learning_rate)
+    # scheduler_s_model = CosineAnnealingLR(optimizer_s_model, T_max=T_max, eta_min=lr_min_factor * args.s_learning_rate)
+    lr_scheduler = CosineAnnealingWarmRestarts(
+        optimizer_model,
+        T_0=50,             # 第一个周期是 50 个 epoch
+        T_mult=2,           # 下一个周期是上一个的 2 倍长 (50, 100, 200...)
+        eta_min=lr_min_factor * args.learning_rate
+    )
+    lr_scheduler_s = CosineAnnealingWarmRestarts(
+        optimizer_s_model,
+        T_0=50,             # 第一个周期是 50 个 epoch
+        T_mult=2,           # 下一个周期是上一个的 2 倍长 (50, 100, 200...)
+        eta_min=lr_min_factor * args.s_learning_rate
+    )
 
     best_val_loss = float('inf')
     best_epoch = 0
@@ -639,7 +655,10 @@ def train(
 
                 # --- 总损失与反向传播 ---
                 # total_loss = scheduler.T1 * loss_I + scheduler.T2 * loss_II
-                total_loss = loss_I + loss_II
+                # 计算分母
+                denominator = scheduler.T1 + scheduler.T2
+                # 计算加权损失
+                total_loss = (scheduler.T1 / denominator) * loss_I + (scheduler.T2 / denominator) * loss_II
 
                  # 根据 OM 论文, 奖励 R(π) = log p_θ(G|π) - log q_φ(π|G)
                 # log p_θ(G|π) 由生成模型的负损失 -total_loss 近似
@@ -750,8 +769,8 @@ def train(
                 's_model_state_dict': s_model_state_to_save,
                 'optimizer_model_state_dict': optimizer_model.state_dict(),
                 'optimizer_s_model_state_dict': optimizer_s_model.state_dict(),
-                'scheduler_model_state_dict': scheduler_model.state_dict(),    
-                'scheduler_s_model_state_dict': scheduler_s_model.state_dict(), 
+                'scheduler_model_state_dict': lr_scheduler.state_dict(),    
+                'scheduler_s_model_state_dict': lr_scheduler_s.state_dict(), 
                 'validation_loss': avg_val_loss, 
                 's_validation_loss': avg_s_val_loss,
                 'args': args
@@ -788,8 +807,8 @@ def train(
                 torch.save(best_model_state, best_model_path)
 
             # 更新学习率调度器
-            scheduler_model.step()
-            scheduler_s_model.step()
+            lr_scheduler.step()
+            lr_scheduler_s.step()
 
     logger.info("训练完成。")
     logger.info(f"最终，最佳模型发现在 Epoch {best_epoch}，验证损失为: {best_val_loss:.4f}")

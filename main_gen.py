@@ -136,9 +136,29 @@ def main(args):
     logger.info(f"[Rank {args.rank}] Generating {num_per_rank} molecules...")
 
     molecules = []
-    for _ in tqdm(range(num_per_rank), desc=f"[Rank {args.rank}] Generating"):
+    for i in tqdm(range(num_per_rank), desc=f"[Rank {args.rank}] Generating"):
+        # 1. 生成分子
         mol = generate_molecule(model, p_model, scheduler, args)
-        molecules.append(mol)
+
+        # 2. 将分子数据移到 CPU，以便进行后续处理和打印
+        #    这可以避免在打印时占用 GPU 内存，也是一个好习惯
+        mol_cpu = mol.cpu()
+        molecules.append(mol_cpu)
+
+        # 3. 使用 logger 打印分子的详细信息
+        #    我们使用一个格式化的字符串来使日志更易读
+        log_message = (
+            f"\n-------------------- [Rank {args.rank}] Generated Molecule #{i+1} --------------------\n"
+            f"Molecule Info: {mol_cpu}\n"
+            f"Node Features (x):\n{mol_cpu.x.argmax(dim=1)}\n"  # 打印原子类型的索引，更直观
+            f"Node Positions (pos):\n{mol_cpu.pos}\n"
+            f"Edge Index (edge_index):\n{mol_cpu.edge_index}\n"
+            f"Edge Attributes (edge_attr):\n{mol_cpu.edge_attr.argmax(dim=1)}\n" # 打印键类型的索引
+            f"Ring Guidance (pring_out):\n{mol_cpu.pring_out.squeeze()}\n"
+            f"----------------------------------------------------------------------"
+        )
+        logger.info(log_message)
+
 
     # 1. 从模型路径中提取文件名 (例如: 'checkpoint_epoch_10.pth')
     model_filename = os.path.basename(args.model_ckpt)
@@ -189,27 +209,27 @@ if __name__ == '__main__':
     # 2. 添加你想从命令行控制的参数
     #    - 首先，让参数文件的路径本身变成一个参数，这样更灵活！
     parser.add_argument('--args_path', type=str, 
-                        default='./saved_args/args_2025-08-23_02-23-39.pt', 
+                        default='./saved_args/args_2025-08-27_11-59-13.pt', 
                         help='Path to the saved arguments .pt file')
     
     #    - 模型路径
     parser.add_argument('--model_ckpt', type=str, 
-                        default='./output/2025-08-23_02-23-39/checkpoints/best_model.pth',
+                        default='./output/2025-08-27_11-59-13/checkpoints/best_model.pth',
                         help='Override the model checkpoint path from the args file.')
 
     #    - 生成分子的最大原子数 (default=None)
     parser.add_argument('--max_atoms', type=int, 
-                        default=5, 
+                        default=30, 
                         help='(Optional) Override the maximum number of atoms per molecule.')
     
     #    - 生成分子的最小原子数 (default=None)
     parser.add_argument('--min_atoms', type=int, 
-                        default=1, 
+                        default=5, 
                         help='(Optional) Override the minimum number of atoms before stopping.')
 
     #    - 要生成的分子总数 (default=None)
     parser.add_argument('--num_generate', type=int, 
-                        default=1, 
+                        default=25, 
                         help='(Optional) Override the total number of molecules to generate.')
     # --------------------------------
 

@@ -5,6 +5,7 @@ import torch.optim as optim
 from tqdm import tqdm
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import CosineAnnealingLR  # 导入 CosineAnnealingLR
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts # 需要导入新的类
 import os
 
 def check_tensors(step_name, tensor_dict):
@@ -348,7 +349,10 @@ def validate(val_loader, model, scheduler, args, amp_autocast):
 
         # --- 总验证损失 ---
         # total_loss = scheduler.T1 * loss_I + scheduler.T2 * loss_II 
-        total_loss = loss_I + loss_II
+        # 计算分母
+        denominator = scheduler.T1 + scheduler.T2
+        # 计算加权损失
+        total_loss = (scheduler.T1 / denominator) * loss_I + (scheduler.T2 / denominator) * loss_II
         
         total_val_loss += total_loss.item()
         pbar_val.set_postfix({
@@ -386,7 +390,14 @@ def train(
 
     T_max = args.epochs  # 最大迭代次数，通常设置为总 epoch 数
     lr_min_factor = args.lr_min_factor
-    lr_scheduler = CosineAnnealingLR(optimizer, T_max=T_max, eta_min=lr_min_factor * args.learning_rate)
+    # lr_scheduler = CosineAnnealingLR(optimizer, T_max=T_max, eta_min=lr_min_factor * args.learning_rate)
+    # 方案 B: 周期逐渐变长的重启 (更常见)
+    lr_scheduler = CosineAnnealingWarmRestarts(
+        optimizer, 
+        T_0=50,             # 第一个周期是 50 个 epoch
+        T_mult=2,           # 下一个周期是上一个的 2 倍长 (50, 100, 200...)
+        eta_min=lr_min_factor * args.learning_rate
+    )
 
     best_val_loss = float('inf')
     best_epoch = 0
@@ -630,7 +641,10 @@ def train(
 
                 # --- 总损失与反向传播 ---
                 # total_loss = scheduler.T1 * loss_I + scheduler.T2 * loss_II
-                total_loss = loss_I + loss_II
+                # 计算分母
+                denominator = scheduler.T1 + scheduler.T2
+                # 计算加权损失
+                total_loss = (scheduler.T1 / denominator) * loss_I + (scheduler.T2 / denominator) * loss_II
 
                 total_loss = total_loss / accumulation_steps
                 total_loss.backward()

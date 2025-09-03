@@ -9,6 +9,116 @@ from src.training.scheduler import HierarchicalDiffusionScheduler
 # 辅助函数
 # ==============================================================================
 
+# 新增辅助函数：对称化
+# ==============================================================================
+def symmetrize_bond_logits(edge_index, bond_logits):
+    """
+    通过平均相反方向边的 logits 来强制对称性。
+    
+    Args:
+        edge_index (Tensor): [2, num_edges]
+        bond_logits (Tensor): [num_edges, num_bond_types]
+        
+    Returns:
+        symmetrized_logits (Tensor): [num_edges, num_bond_types]
+    """
+    num_edges = edge_index.shape[1]
+    symmetrized_logits = torch.zeros_like(bond_logits)
+    processed_edges = torch.zeros(num_edges, dtype=torch.bool, device=edge_index.device)
+
+    for i in range(num_edges):
+        if processed_edges[i]:
+            continue
+
+        u, v = edge_index[0, i], edge_index[1, i]
+
+        # 寻找反向边 (v, u)
+        # 注意：这在稠密图上效率不高，但在小分子上是可行的
+        mask_rev = (edge_index[0] == v) & (edge_index[1] == u)
+        
+        # 应该只找到一条反向边
+        if mask_rev.sum() == 1:
+            j = torch.where(mask_rev)[0].item()
+            
+            # 平均 logits
+            avg_logits = (bond_logits[i] + bond_logits[j]) / 2.0
+            
+            symmetrized_logits[i] = avg_logits
+            symmetrized_logits[j] = avg_logits
+            
+            processed_edges[i] = True
+            processed_edges[j] = True
+        else:
+            # 如果没有反向边（例如自环），则直接使用原始 logits
+            symmetrized_logits[i] = bond_logits[i]
+            processed_edges[i] = True
+            
+    return symmetrized_logits
+
+def sample_symmetric_bonds(edge_index, x_t_bonds, pred_logits_b, scheduler, t_gen, schedule_type):
+    """
+    对给定的边子集进行对称采样。
+    
+    Args:
+        edge_index (Tensor): 边的索引 [2, num_sub_edges]。
+        x_t_bonds (Tensor): 当前时间步的边属性 [num_sub_edges, num_bond_types]。
+        pred_logits_b (Tensor): 模型预测的边 logits [num_sub_edges, num_bond_types]。
+        scheduler: 扩散调度器。
+        t_gen (int): 当前去噪时间步。
+        schedule_type (str): 'alpha' 或 'delta'。
+        
+    Returns:
+        Tensor: 对称采样后的新边属性 [num_sub_edges, num_bond_types]。
+    """
+    # 1. 对称化 logits，确保概率分布相同
+    symmetrized_logits = symmetrize_bond_logits(edge_index, pred_logits_b)
+    
+    # 2. 联动采样
+    new_edge_attr_one_hot = torch.zeros_like(x_t_bonds)
+    processed_edges = torch.zeros(edge_index.shape[1], dtype=torch.bool, device=edge_index.device)
+
+    for i in range(edge_index.shape[1]):
+        if processed_edges[i]:
+            continue
+
+        u, v = edge_index[0, i], edge_index[1, i]
+        
+        # 在给定的 edge_index 中寻找反向边
+        mask_rev = (edge_index[0] == v) & (edge_index[1] == u)
+        
+        if mask_rev.sum() == 1:
+            j = torch.where(mask_rev)[0].item()
+            
+            # 对边对只采样一次
+            sampled_bond = scheduler.compute_discrete_t_minus_1(
+                x_t=x_t_bonds[i].unsqueeze(0),
+                pred_x0_logits=symmetrized_logits[i].unsqueeze(0),
+                t=t_gen,
+                schedule_type=schedule_type,
+                is_atom=False
+            )
+            
+            # 将同一样本应用到两个方向
+            new_edge_attr_one_hot[i] = sampled_bond
+            new_edge_attr_one_hot[j] = sampled_bond
+            
+            processed_edges[i] = True
+            processed_edges[j] = True
+        else:
+            # 处理无反向边的情况 (例如自环)
+            sampled_bond = scheduler.compute_discrete_t_minus_1(
+                x_t=x_t_bonds[i].unsqueeze(0),
+                pred_x_logits=symmetrized_logits[i].unsqueeze(0),
+                t=t_gen,
+                schedule_type=schedule_type,
+                is_atom=False
+            )
+            new_edge_attr_one_hot[i] = sampled_bond
+            processed_edges[i] = True
+            
+    return new_edge_attr_one_hot
+
+
 def get_ring_guidance(p_model, fragment: Data, threshold=0.5) -> Data:
     """
     直接在输入的图上运行环结构预测（要求图已经包含 x, edge_index, edge_attr）。
@@ -76,11 +186,16 @@ def generate_molecule(
     model.eval() 
     p_model.eval() # 评估模式 (Evaluation Mode)
 
+    ATOM_MAP = ['H', 'C', 'N', 'O', 'F', 'Absorb']
+    BOND_MAP = ['Single', 'Double', 'Triple', 'Aromatic', 'No Bond']
+
     # --- 1. 从一个原子开始 ---
     print("步骤 1: 随机采样第一个原子")
     # a. 随机原子类型 (H,C,N,O,F)
-    atom_type_idx = torch.randint(0, 5, (1,), device=device) # 输出单个元素的一维张量
-    atom_type = F.one_hot(atom_type_idx, num_classes=6).float() # 6类，最后一类是吸收态
+    atom_type_idx_tensor = torch.randint(0, 5, (1,), device=device)
+    atom_type_idx = atom_type_idx_tensor.item() # 获取 python int
+    atom_symbol = ATOM_MAP[atom_type_idx]      # 从映射中查找符号
+    atom_type = F.one_hot(atom_type_idx_tensor, num_classes=6).float() # 6类，最后一类是吸收态
     
     # b. 设置坐标为原点
     pos = torch.zeros(1, 3, device=device)
@@ -98,6 +213,10 @@ def generate_molecule(
         dtype=torch.float,  # 与环指导信息的标准类型一致（0/1的float类型）
         device=fragment.x.device if hasattr(fragment, 'x') else torch.device('cpu')
     )
+
+    print(f"  -> 第一个原子类型: {atom_symbol} (索引: {atom_type_idx})")
+    print(f"  -> 初始片段信息: {fragment}")
+    print(f"  -> [坐标] 初始坐标: Shape={fragment.pos.shape}\n{fragment.pos}")
 
     # --- 2. 自回归生成循环 ---
     for num_existing_atoms in range(1, args.max_atoms):
@@ -183,6 +302,10 @@ def generate_molecule(
         current_data.edge_index = final_edge_index
         current_data.edge_attr = final_edge_attr
 
+        print(f"  -> 添加新原子后, 'current_data' 准备进入去噪阶段:")
+        print(f"     - is_new_node 标记: {current_data.is_new_node.squeeze().tolist()}")
+        print(f"  -> [坐标] 阶段一去噪前 (含带噪新原子): Shape={current_data.pos.shape}\n{current_data.pos}")
+
         # --- 3. 阶段一去噪 (T2 循环) ---
         print(f"步骤 3: 阶段一去噪 (T2={scheduler.T2} -> 1)")
         
@@ -197,6 +320,10 @@ def generate_molecule(
             target_node_mask = denoising_data.is_new_node.squeeze().bool()
             target_edge_mask = (target_node_mask[denoising_data.edge_index[0]] | target_node_mask[denoising_data.edge_index[1]])
             # edge_index_to_predict = denoising_data.edge_index[:, target_edge_mask]
+
+            if t_gen == scheduler.T2:
+                num_target_edges = target_edge_mask.sum().item()
+                print(f"\n  -> [阶段一] 开始去噪。将对 {num_target_edges} 条目标边进行预测。")
             
             # 模型前向传播，只预测目标
             predictions = model(denoising_data, t, target_node_mask, target_edge_mask)
@@ -204,11 +331,17 @@ def generate_molecule(
             pred_logits_a = predictions['atom_type_logits']
             pred_logits_b = predictions['bond_logits']
 
+            if t_gen == scheduler.T2:
+                print(f"  -> [阶段一] 模型输出 pred_logits_b 的维度: {pred_logits_b.shape}")
+                # 验证维度是否匹配
+                assert pred_logits_b.shape[0] == num_target_edges, \
+                    f"预测的边数 ({pred_logits_b.shape[0]}) 与目标边数 ({num_target_edges}) 不匹配!"
+
             if t_gen % 2 == 0:
                 with torch.no_grad():
                     pos_norm = torch.linalg.norm(denoising_data.pos[target_node_mask], dim=-1).mean()
                     pred_r0_norm = torch.linalg.norm(pred_r0, dim=-1).mean()
-                    print(f"\n  [T2={t_gen:04d}] Pos Norm: {pos_norm:.4f}, Predicted R0 Norm: {pred_r0_norm:.4f}")
+                    # print(f"\n  [T2={t_gen:04d}] Pos Norm: {pos_norm:.4f}, Predicted R0 Norm: {pred_r0_norm:.4f}")
 
             # # 进行一步采样
             # # a. 坐标采样
@@ -272,24 +405,62 @@ def generate_molecule(
                 schedule_type='delta',
                 is_atom=True
             )
-            bond_attr_t_minus_1 = scheduler.compute_discrete_t_minus_1(
-                x_t=denoising_data.edge_attr[target_edge_mask],
-                pred_x0_logits=pred_logits_b,
-                t=t_gen,
-                schedule_type='delta',
-                is_atom=False
+            # bond_attr_t_minus_1 = scheduler.compute_discrete_t_minus_1(
+            #     x_t=denoising_data.edge_attr[target_edge_mask],
+            #     pred_x0_logits=symmetrized_logits_b, # <-- 使用 symmetrized_logits_b
+            #     t=t_gen,
+            #     schedule_type='delta',
+            #     is_atom=False
+            # )
+
+            bond_attr_t_minus_1_subset = sample_symmetric_bonds(
+                edge_index=denoising_data.edge_index[:, target_edge_mask],
+                x_t_bonds=denoising_data.edge_attr[target_edge_mask],
+                pred_logits_b=pred_logits_b,
+                scheduler=scheduler,
+                t_gen=t_gen,
+                schedule_type='delta'
             )
             
             # c. 更新 denoising_data 的目标部分
             denoising_data.pos[target_node_mask] = pos_t_minus_1
             denoising_data.x[target_node_mask] = atom_type_t_minus_1
-            denoising_data.edge_attr[target_edge_mask] = bond_attr_t_minus_1
+            denoising_data.edge_attr[target_edge_mask] = bond_attr_t_minus_1_subset
 
         # T2 循环结束，denoising_data 现在是阶段一去噪的结果
         fragment = denoising_data
+
+        newly_denoised_atom_type_idx = fragment.x[-1].argmax().item()
+        predicted_symbol = ATOM_MAP[newly_denoised_atom_type_idx]
+        print(f"  -> 阶段一去噪完成。新原子类型被预测为: {predicted_symbol} (索引: {newly_denoised_atom_type_idx})")
+
+        print("  -> 新原子与现有片段的连接预测:")
+        # 找到所有从新原子出发的边 (这样可以避免打印重复的边)
+        source_is_new_mask = (fragment.edge_index[0] == new_atom_idx)
+        
+        if not source_is_new_mask.any():
+            print("    - (未检测到从新原子出发的边)")
+        else:
+            # 获取这些边的目标节点和属性
+            edges_from_new = fragment.edge_index[:, source_is_new_mask]
+            bonds_from_new = fragment.edge_attr[source_is_new_mask]
+            
+            # 获取预测的键类型索引
+            bond_indices = bonds_from_new.argmax(dim=1)
+            
+            # 遍历并打印每条新边
+            for i in range(edges_from_new.shape[1]):
+                target_atom_idx = edges_from_new[1, i].item()
+                bond_idx = bond_indices[i].item()
+                bond_symbol = BOND_MAP[bond_idx]
+                print(f"    - Atom {new_atom_idx} <--> Atom {target_atom_idx}: {bond_symbol} (索引: {bond_idx})")
+
+        print(f"  -> [坐标] 阶段一去噪后: Shape={fragment.pos.shape}\n{fragment.pos}")
         
         # 更新环指导信息
+        print(f"  -> 更新环指导信息...")
         fragment = get_ring_guidance(p_model, fragment)
+        print(f"  -> 环预测结果 (pring_out): {fragment.pring_out.squeeze().tolist()}")
 
         # --- 4. 阶段二去噪 (T1 循环) ---
         print(f"步骤 4: 阶段二去噪 (T1={scheduler.T1} -> 1)")
@@ -300,17 +471,29 @@ def generate_molecule(
             # 准备模型输入，这次是全局预测
             target_node_mask = torch.ones(fragment.num_nodes, dtype=torch.bool, device=device)
             target_edge_mask = torch.ones(fragment.num_edges, dtype=torch.bool, device=device)
+
+            if t_gen == scheduler.T1:
+                num_target_edges = target_edge_mask.sum().item()
+                # 注意这里的 num_target_edges 应该等于 fragment.num_edges
+                assert num_target_edges == fragment.num_edges
+                print(f"\n  -> [阶段二] 开始全局微调。将对全部 {num_target_edges} 条边进行预测。")
             
             predictions = model(fragment, t, target_node_mask, target_edge_mask)
             pred_r0 = predictions['predicted_r0']
             pred_logits_a = predictions['atom_type_logits']
             pred_logits_b = predictions['bond_logits']
 
+            if t_gen == scheduler.T1:
+                print(f"  -> [阶段二] 模型输出 pred_logits_b 的维度: {pred_logits_b.shape}")
+                # 验证维度是否匹配
+                assert pred_logits_b.shape[0] == num_target_edges, \
+                    f"预测的边数 ({pred_logits_b.shape[0]}) 与目标边数 ({num_target_edges}) 不匹配!"
+
             if t_gen % 2 == 0:
                 with torch.no_grad():
                     pos_norm = torch.linalg.norm(fragment.pos, dim=-1).mean()
                     pred_r0_norm = torch.linalg.norm(pred_r0, dim=-1).mean()
-                    print(f"\n  [T1={t_gen:04d}] Pos Norm: {pos_norm:.4f}, Predicted R0 Norm: {pred_r0_norm:.4f}")
+                    # print(f"\n  [T1={t_gen:04d}] Pos Norm: {pos_norm:.4f}, Predicted R0 Norm: {pred_r0_norm:.4f}")
 
             # # 全局采样
             # pred_noise = scheduler.get_predicted_noise_from_r0(fragment.pos, t.expand(fragment.num_nodes), pred_r0, 'alpha')
@@ -365,28 +548,44 @@ def generate_molecule(
                 schedule_type='alpha',
                 is_atom=True
             )
-            fragment.edge_attr = scheduler.compute_discrete_t_minus_1(
-                x_t=fragment.edge_attr[target_edge_mask],
-                pred_x0_logits=pred_logits_b,
-                t=t_gen,
-                schedule_type='alpha',
-                is_atom=False
+            # fragment.edge_attr = scheduler.compute_discrete_t_minus_1(
+            #     x_t=fragment.edge_attr[target_edge_mask],
+            #     pred_x0_logits=symmetrized_logits_b_global, # <-- 使用 symmetrized_logits_b_global
+            #     t=t_gen,
+            #     schedule_type='alpha',
+            #     is_atom=False
+            # )
+
+            fragment.edge_attr = sample_symmetric_bonds(
+                edge_index=fragment.edge_index[:, target_edge_mask],
+                x_t_bonds=fragment.edge_attr[target_edge_mask], # 传入更新前的状态
+                pred_logits_b=pred_logits_b,
+                scheduler=scheduler,
+                t_gen=t_gen,
+                schedule_type='alpha'
             )
+
+        print(f"  -> [坐标] 阶段二微调后 (中心化前): Shape={fragment.pos.shape}\n{fragment.pos}")
+
             
         # T1 循环结束，我们得到了一个新增了原子并微调过的分子片段
         
         # 更新环指导信息
+        print(f"  -> 再次更新环指导信息...")
         fragment = get_ring_guidance(p_model, fragment)
+        print(f"  -> 环预测结果 (pring_out): {fragment.pring_out.squeeze().tolist()}")
 
         # 将坐标零中心化
+        print("  -> 将分子坐标零中心化。")
         fragment.pos = fragment.pos - fragment.pos.mean(dim=0, keepdim=True)
+        print(f"  -> [坐标] 零中心化后: Shape={fragment.pos.shape}\n{fragment.pos}")
         
         # --- 5. 检查停止条件 ---
         print("步骤 5: 检查停止条件")
         new_atom_idx = num_existing_atoms
         is_connected = check_connectivity(new_atom_idx, fragment)
         
-        if not is_connected and num_existing_atoms > args.min_atoms:
+        if not is_connected and num_existing_atoms >= args.min_atoms:
             print(f"  -> 新原子未连接到片段，生成终止。")
             # 终止前，移除最后一个未连接的原子
             # (这是一个可选的清理步骤)
@@ -399,4 +598,6 @@ def generate_molecule(
             break
             
     print("\n--- 分子生成完成 ---")
+    num_bonds = fragment.num_edges // 2 if hasattr(fragment, 'num_edges') else 0
+    print(f"最终分子包含 {fragment.num_nodes} 个原子和 {num_bonds} 条化学键。")
     return fragment
