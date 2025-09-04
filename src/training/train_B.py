@@ -7,6 +7,44 @@ import torch.nn.functional as F
 from torch.optim.lr_scheduler import CosineAnnealingLR  # 导入 CosineAnnealingLR
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts # 需要导入新的类
 import os
+import collections
+
+def log_timestep_distribution(stats_dict, epoch, strategy_name, t_bin_size, logger):
+    """
+    处理并记录一个 epoch 内时间步的采样分布和对应的平均损失。
+    """
+    if not stats_dict:
+        logger.info(f"--- 在 Epoch {epoch} 未收集到策略 {strategy_name} 的时间步统计信息 ---")
+        return
+
+    logger.info(f"--- Epoch {epoch} | 策略 {strategy_name} | 时间步/损失分布 ---")
+    
+    total_samples = sum(data['count'] for data in stats_dict.values())
+    if total_samples == 0:
+        logger.info("  -> (无有效样本)")
+        return
+
+    # 按时间步的 bin 排序
+    sorted_bins = sorted(stats_dict.keys())
+    
+    for t_bin_start in sorted_bins:
+        data = stats_dict[t_bin_start]
+        count = data['count']
+        losses = data['losses']
+        
+        if count == 0:
+            continue
+            
+        frequency = (count / total_samples) * 100
+        avg_loss = sum(losses) / len(losses)
+        
+        t_bin_end = t_bin_start + t_bin_size - 1
+        log_str = (
+            f"  - t 范围 [{t_bin_start:04d}-{t_bin_end:04d}]: "
+            f"采样频率={frequency:5.1f}% ({count:>{len(str(total_samples))}}/{total_samples}), "
+            f"平均损失={avg_loss:.4f}"
+        )
+        logger.info(log_str)
 
 def check_tensors(step_name, tensor_dict):
     """一个辅助函数，用于检查字典中的张量是否存在 NaN 或 Inf。"""
@@ -407,6 +445,13 @@ def train(
 
     accumulation_steps = args.accumulation_steps
 
+    # ==================== 修改处: 调整 bin 大小 ====================
+    # 您可以根据 T1 和 T2 的总步长调整这些值以获得合适的粒度
+    # 例如，T1=100, bin=10 会产生10个条目。T2=900, bin=100 会产生9个条目。
+    t_bin_size_I = 10
+    t_bin_size_II = 100
+    # ==========================================================
+
     for epoch in range(1, args.epochs + 1):
         # 将模型设置为“训练模式”
         # 它会通知模型中所有具有不同训练/评估行为的层（主要是 Dropout 层和 BatchNorm 层）切换到它们的训练状态。
@@ -428,6 +473,12 @@ def train(
         total_lossII_a_epoch = 0.0
         total_lossII_r_epoch = 0.0
         total_lossII_b_epoch = 0.0
+
+        # ==================== 初始化 epoch 统计容器 ====================
+        # 使用 defaultdict 可以让代码更简洁
+        t1_stats = collections.defaultdict(lambda: {'count': 0, 'losses': []})
+        t2_stats = collections.defaultdict(lambda: {'count': 0, 'losses': []})
+        # =================================================================
 
         optimizer.zero_grad()
 
@@ -582,36 +633,44 @@ def train(
                 # f. 模型前向传播 (注意时间步传入的是 t2)
                 predictions_II = model(noised_data_II, t2, target_node_mask_II, target_edge_mask)
 
-                # with torch.no_grad(): # 确保这部分不计算梯度
-                #     # --- 监控策略 I (全局微调) ---
-                #     # 1. 获取模型预测的噪声
-                #     predicted_noise_I = predictions_I['predicted_r0']
+                with torch.no_grad(): # 确保这部分不计算梯度
+                    # --- 监控策略 I (全局微调) ---
+                    # 1. 获取模型预测的x0
+                    predicted_x0_I = predictions_I['predicted_r0']
                     
-                #     # 2. 根据预测的噪声，反推出模型预测的干净坐标 x_hat_0
-                #     alpha_bar_t_I = scheduler.alpha_bars[t1_per_node]
-                #     sqrt_alpha_bar_t_I = torch.sqrt(alpha_bar_t_I).unsqueeze(1)
-                #     sqrt_one_minus_alpha_bar_t_I = torch.sqrt(1.0 - alpha_bar_t_I).unsqueeze(1)
-                #     predicted_x0_I = (noised_pos_I - sqrt_one_minus_alpha_bar_t_I * predicted_noise_I) / sqrt_alpha_bar_t_I
+                    # # 2. 根据预测的噪声，反推出模型预测的干净坐标 x_hat_0
+                    # alpha_bar_t_I = scheduler.alpha_bars[t1_per_node]
+                    # sqrt_alpha_bar_t_I = torch.sqrt(alpha_bar_t_I).unsqueeze(1)
+                    # sqrt_one_minus_alpha_bar_t_I = torch.sqrt(1.0 - alpha_bar_t_I).unsqueeze(1)
+                    # predicted_x0_I = (noised_pos_I - sqrt_one_minus_alpha_bar_t_I * predicted_noise_I) / sqrt_alpha_bar_t_I
                     
-                #     # 3. 计算并记录关键指标的模长 (Norm)
-                #     # 我们关心的是平均范数，而不是总范数
-                #     norm_true_noise_I = torch.linalg.norm(noise1, dim=-1).mean()
-                #     norm_predicted_noise_I = torch.linalg.norm(predicted_noise_I, dim=-1).mean()
-                #     norm_predicted_x0_I = torch.linalg.norm(predicted_x0_I, dim=-1).mean()
-                #     norm_true_x0_I = torch.linalg.norm(scaled_pos, dim=-1).mean() # scaled_pos 是真实的干净坐标
+                    # 3. 计算并记录关键指标的模长 (Norm)
+                    # 我们关心的是平均范数，而不是总范数
+                    # norm_true_noise_I = torch.linalg.norm(noise1, dim=-1).mean()
+                    # norm_predicted_noise_I = torch.linalg.norm(predicted_noise_I, dim=-1).mean()
+                    norm_predicted_x0_I = torch.linalg.norm(predicted_x0_I, dim=-1).mean().item()
+                    norm_true_x0_I = torch.linalg.norm(scaled_pos, dim=-1).mean().item() # scaled_pos 是真实的干净坐标
 
-                #     # --- 监控策略 II (局部生成) ---
-                #     predicted_noise_II = predictions_II['predicted_r0']
+                    # --- 监控策略 II (局部生成) ---
+                    predicted_x0_II = predictions_II['predicted_r0']
                     
-                #     alpha_bar_t_II = scheduler.delta_bars[t2_per_node[target_node_mask_II]]
-                #     sqrt_alpha_bar_t_II = torch.sqrt(alpha_bar_t_II).unsqueeze(1)
-                #     sqrt_one_minus_alpha_bar_t_II = torch.sqrt(1.0 - alpha_bar_t_II).unsqueeze(1)
-                #     predicted_x0_II = (noised_pos_target - sqrt_one_minus_alpha_bar_t_II * predicted_noise_II) / sqrt_alpha_bar_t_II
+                    # alpha_bar_t_II = scheduler.delta_bars[t2_per_node[target_node_mask_II]]
+                    # sqrt_alpha_bar_t_II = torch.sqrt(alpha_bar_t_II).unsqueeze(1)
+                    # sqrt_one_minus_alpha_bar_t_II = torch.sqrt(1.0 - alpha_bar_t_II).unsqueeze(1)
+                    # predicted_x0_II = (noised_pos_target - sqrt_one_minus_alpha_bar_t_II * predicted_noise_II) / sqrt_alpha_bar_t_II
 
-                #     norm_true_noise_II = torch.linalg.norm(noise2[target_node_mask_II], dim=-1).mean()
-                #     norm_predicted_noise_II = torch.linalg.norm(predicted_noise_II, dim=-1).mean()
-                #     norm_predicted_x0_II = torch.linalg.norm(predicted_x0_II, dim=-1).mean()
-                #     norm_true_x0_II = torch.linalg.norm(scaled_pos[target_node_mask_II], dim=-1).mean()
+                    # norm_true_noise_II = torch.linalg.norm(noise2[target_node_mask_II], dim=-1).mean()
+                    # norm_predicted_noise_II = torch.linalg.norm(predicted_noise_II, dim=-1).mean()
+                    norm_predicted_x0_II = torch.linalg.norm(predicted_x0_II, dim=-1).mean().item()
+                    norm_true_x0_II = torch.linalg.norm(scaled_pos[target_node_mask_II], dim=-1).mean().item()
+
+                    # --- 监控 `first_pred_r0` (这个逻辑也放在这里) ---
+                    if predicted_x0_II.shape[0] > 0:
+                        first_pred_r0_sample = predicted_x0_II[0].detach().cpu().numpy()
+                        pred_r0_str = f"[{first_pred_r0_sample[0]:>7.3f}, {first_pred_r0_sample[1]:>7.3f}, {first_pred_r0_sample[2]:>7.3f}]"
+                    else:
+                        pred_r0_str = "N/A"
+                
 
                 # g. 计算损失 Ⅱ
                 # 注意：这里的真实标签和噪声都需要根据 mask 进行筛选
@@ -649,7 +708,21 @@ def train(
                 total_loss = total_loss / accumulation_steps
                 total_loss.backward()
 
-        
+            # ==================== 收集当前批次的统计数据 ====================
+            # 策略 I
+            loss_I_item = loss_I.item()
+            for t_val in t1.cpu().numpy(): # t1 是 per-graph 的
+                t_bin = (t_val // t_bin_size_I) * t_bin_size_I
+                t1_stats[t_bin]['count'] += 1
+                t1_stats[t_bin]['losses'].append(loss_I_item)
+
+            # 策略 II
+            loss_II_item = loss_II.item()
+            for t_val in t2.cpu().numpy(): # t2 也是 per-graph 的
+                t_bin = (t_val // t_bin_size_II) * t_bin_size_II
+                t2_stats[t_bin]['count'] += 1
+                t2_stats[t_bin]['losses'].append(loss_II_item)
+            # =====================================================================
 
             if is_sync_step:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -667,18 +740,23 @@ def train(
             total_lossII_r_epoch += lossII_r.item()
             total_lossII_b_epoch += lossII_b.item()
             pbar.set_postfix({
-                'loss': total_loss.item() * accumulation_steps, # 将当前批次的损失乘以 accumulation_steps，得到可比较的真实损失
+                # 'loss': total_loss.item() * accumulation_steps, # 将当前批次的损失乘以 accumulation_steps，得到可比较的真实损失
                 'loss_I': loss_I.item(), # 将 loss_I 的数值添加到进度条
                 'loss_II': loss_II.item(), # 将 loss_II 的数值添加到进度条
-                'lossI_a': lossI_a.item(), # 原子类型损失 Ⅰ
+                # 'lossI_a': lossI_a.item(), # 原子类型损失 Ⅰ
                 'lossI_r': lossI_r.item(), # 坐标损失 Ⅰ
-                'lossI_b': lossI_b.item(), # 边类型损失 Ⅰ
-                'lossII_a': lossII_a.item(), # 原子类型损失 Ⅱ
+                # 'lossI_b': lossI_b.item(), # 边类型损失 Ⅰ
+                # 'lossII_a': lossII_a.item(), # 原子类型损失 Ⅱ
                 'lossII_r': lossII_r.item(), # 坐标损失 Ⅱ
-                'lossII_b': lossII_b.item()#，  # 边类型损失 Ⅱ
+                # 'lossII_b': lossII_b.item(),  # 边类型损失 Ⅱ
                 # 'p_noise_I_norm': norm_predicted_noise_I.item(),
-                # 'p_x0_I_norm': norm_predicted_x0_I.item(),
-                # 't_x0_I_norm': norm_true_x0_I.item(), # 真实 x0 的 Norm，应该是一个小常数
+                # ==================== 新增的监控项 ====================
+                'p_x0_I_norm': norm_predicted_x0_I,    # 策略 I 预测 x0 的范数
+                't_x0_I_norm': norm_true_x0_I,      # 策略 I 真实 x0 的范数
+                'p_x0_II_norm': norm_predicted_x0_II,   # 策略 II 预测 x0 的范数
+                't_x0_II_norm': norm_true_x0_II,     # 策略 II 真实 x0 的范数
+                'first_pred_r0': pred_r0_str       # 策略 II 第一个预测 x0 的值
+                # =======================================================
             })
             
         avg_scaled_train_loss = total_loss_epoch / len(train_loader)
@@ -708,6 +786,10 @@ def train(
         )
         logger.info(log_str)
 
+        # ==================== 在 epoch 结束时记录分布 ====================
+        log_timestep_distribution(t1_stats, epoch, "I (全局微调)", t_bin_size_I, logger)
+        log_timestep_distribution(t2_stats, epoch, "II (局部生成)", t_bin_size_II, logger)
+        # ====================================================================
 
         # --- 验证阶段 ---
         if epoch >= args.val_thre and (epoch % args.val_log_freq == 0):
