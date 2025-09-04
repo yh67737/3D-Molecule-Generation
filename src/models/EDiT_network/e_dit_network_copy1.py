@@ -24,16 +24,11 @@ class MultiTaskHead(nn.Module):
         self.irreps_node_in = Irreps(irreps_node_in)
         self.irreps_edge_in = Irreps(irreps_edge_in)
 
-        # 提取标量维度用于后续 MLP
-        self.irreps_node_scalar = Irreps([(mul, ir) for mul, ir in self.irreps_node_in if ir.l == 0])
-        num_node_scalar = self.irreps_node_scalar.dim
-        num_edge_scalar = self.irreps_edge_in.dim
-
         out_drop_prob = args.out_drop
 
         # --- (1) 原子类型预测头 (Atom Type Head) ---
         # 创建一个投影层，用于从完整的节点特征中安全地提取标量部分
-        # self.irreps_node_scalar = Irreps([(mul, ir) for mul, ir in self.irreps_node_in if ir.l == 0])
+        self.irreps_node_scalar = Irreps([(mul, ir) for mul, ir in self.irreps_node_in if ir.l == 0])
         self.node_scalar_proj = LinearRS(self.irreps_node_in, self.irreps_node_scalar)
 
         self.atom_type_head = nn.Sequential(
@@ -44,19 +39,19 @@ class MultiTaskHead(nn.Module):
         )
 
         # --- (2) 坐标预测头 (Coordinate Head) ---
-        # 完全借鉴 PosUpdate 的思想来计算 delta_pos
-        # a. 两个独立的 MLP，用于将起始/终止节点的标量特征投影到边空间
-        #    输入是节点的标量部分，输出维度可以是一个超参数，比如 hidden_dim
-        self.left_lin_edge = nn.Linear(num_node_scalar, args.hidden_dim)
-        self.right_lin_edge = nn.Linear(num_node_scalar, args.hidden_dim)
+        # a. 使用张量积从两个节点的特征中计算出一个交互标量
+        self.coord_head_tp = FullyConnectedTensorProductRescale(
+            self.irreps_node_in, self.irreps_node_in, "0e"  # 输出一个标量
+        )
 
-        # b. 一个 MLP (edge_lin)，用于融合所有信息并计算最终的标量“力”
-        #    输入维度 = 边标量特征 + 节点交互特征 (hidden_dim)
-        edge_lin_input_dim = num_edge_scalar + args.hidden_dim
-        self.edge_lin = nn.Sequential(
-            nn.Linear(edge_lin_input_dim, args.hidden_dim),
+        # b. 创建一个 MLP，它接收交互标量和原始边特征，最终输出一个权重
+        num_edge_scalar = self.irreps_edge_in.dim
+        coord_mlp_input_dim = self.coord_head_tp.irreps_out.dim + num_edge_scalar
+        self.coord_scalar_mlp = nn.Sequential(
+            nn.Linear(coord_mlp_input_dim, args.hidden_dim),
             nn.SiLU(),
-            nn.Linear(args.hidden_dim, 1) # 输出一个标量 (weight_edge)
+            # 输出维度为1，因为我们只需要一个标量权重
+            nn.Linear(args.hidden_dim, 1) 
         )
 
         # --- (3) 化学键预测头 (Bond Prediction Head) ---
@@ -99,34 +94,32 @@ class MultiTaskHead(nn.Module):
         # --- 2. 坐标预测 (预测 r0_hat) ---
         row, col = edge_index
         
-        # a. 提取所有节点的标量特征，用于坐标预测
-        h_final_scalar = self.node_scalar_proj(h_final)
+        # a. 计算当前加噪坐标的相对位置向量
+        coord_diff = r_t_final[row] - r_t_final[col]
 
-        # b. 投影节点特征到边空间
-        left_feat = self.left_lin_edge(h_final_scalar[row])
-        right_feat = self.right_lin_edge(h_final_scalar[col])
+        # a.1 计算原子间的距离，并添加一个小的 epsilon 防止梯度问题
+        distance = torch.linalg.norm(coord_diff, dim=1, keepdim=True) + 1e-8
         
-        # c. 创建节点交互特征
-        node_interaction_feat = left_feat * right_feat  # 元素级乘法
+        # a.2 归一化相对位置向量
+        coord_diff_normalized = coord_diff / distance
         
-        # d. 融合边特征和节点交互特征，计算标量“力”
-        edge_lin_input = torch.cat([e_final, node_interaction_feat], dim=-1)
-        weight_edge = self.edge_lin(edge_lin_input) # shape: [num_edges, 1]
+        # b. 使用节点特征计算每条边上的交互标量
+        interaction_scalars = self.coord_head_tp(h_final[row], h_final[col])
         
-        # e. 计算几何信息
-        relative_vec = r_t_final[row] - r_t_final[col]
-        distance = torch.linalg.norm(relative_vec, dim=-1, keepdim=True) + 1e-8
+        # c. 融合交互标量和原始边特征
+        coord_head_input = torch.cat([interaction_scalars, e_final], dim=-1)
         
-        # f. 计算方向性的、带距离衰减的力向量
-        force_edge = weight_edge * (relative_vec / distance) / (distance + 1.0)
+        # d. 通过 MLP 得到最终的标量权重
+        weights = self.coord_scalar_mlp(coord_head_input)
+        
+        # e. 用权重缩放相对位置向量，得到每条边的噪声贡献
+        noise_contribution = coord_diff_normalized * weights
+        
+        # f. 使用 scatter_sum 聚合每个节点的总噪声贡献
+        #    注意：我们将贡献聚合到 `row` 节点上
+        predicted_r0_all_nodes = scatter_sum(noise_contribution, row, dim=0, dim_size=h_final.shape[0])
 
-        # g. 聚合得到每个节点的总位移 delta_pos
-        delta_pos_all_nodes = scatter_sum(force_edge, row, dim=0, dim_size=h_final.shape[0])
-
-        # h. [关键] 将更新量加到原始的加噪坐标上，得到对 x₀ 的预测
-        predicted_r0_all_nodes = r_t_final + delta_pos_all_nodes
-
-        # i. 只保留目标节点的预测结果
+        # g. 只保留目标节点的预测结果
         predicted_r0 = predicted_r0_all_nodes[target_node_mask]
 
 
