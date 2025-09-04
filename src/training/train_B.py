@@ -2,6 +2,7 @@ import torch
 #torch.autograd.set_detect_anomaly(True)
 import torch.nn as nn
 import torch.optim as optim
+from torch.optim import AdamW
 from tqdm import tqdm
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import CosineAnnealingLR  # 导入 CosineAnnealingLR
@@ -424,7 +425,19 @@ def train(
     model.to(device)
 
     # 创建优化器
-    optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
+    # optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
+    # ==================== 修改处: 使用 AdamW 并加入 weight_decay ====================
+    # 确保 args 对象中有 weight_decay，如果没有，提供一个合理的默认值
+    weight_decay = getattr(args, 'weight_decay', 1e-4) # 常用默认值 1e-4
+    
+    # 创建优化器
+    optimizer = AdamW(
+        model.parameters(), 
+        lr=args.learning_rate,
+        weight_decay=weight_decay # <--- 添加权重衰减
+    )
+    logger.info(f"优化器已设置为 AdamW，学习率: {args.learning_rate}, 权重衰减: {weight_decay}")
+    # ==========================================================================
 
     T_max = args.epochs  # 最大迭代次数，通常设置为总 epoch 数
     lr_min_factor = args.lr_min_factor
@@ -712,18 +725,18 @@ def train(
 
             # ==================== 收集当前批次的统计数据 ====================
             # 策略 I
-            loss_I_item = loss_I.item()
+            lossI_r_item = lossI_r.item()
             for t_val in t1.cpu().numpy(): # t1 是 per-graph 的
                 t_bin = (t_val // t_bin_size_I) * t_bin_size_I
                 t1_stats[t_bin]['count'] += 1
-                t1_stats[t_bin]['losses'].append(loss_I_item)
+                t1_stats[t_bin]['losses'].append(lossI_r_item)
 
             # 策略 II
-            loss_II_item = loss_II.item()
+            lossII_r_item = lossII_r.item()
             for t_val in t2.cpu().numpy(): # t2 也是 per-graph 的
                 t_bin = (t_val // t_bin_size_II) * t_bin_size_II
                 t2_stats[t_bin]['count'] += 1
-                t2_stats[t_bin]['losses'].append(loss_II_item)
+                t2_stats[t_bin]['losses'].append(lossII_r_item)
             # =====================================================================
 
             if is_sync_step:
@@ -795,8 +808,8 @@ def train(
         logger.info(log_str)
 
         # ==================== 在 epoch 结束时记录分布 ====================
-        log_timestep_distribution(t1_stats, epoch, "I (全局微调)", t_bin_size_I, logger)
-        log_timestep_distribution(t2_stats, epoch, "II (局部生成)", t_bin_size_II, logger)
+        log_timestep_distribution(t1_stats, epoch, "I (全局微调 - 坐标损失)", t_bin_size_I, logger)
+        log_timestep_distribution(t2_stats, epoch, "II (局部生成 - 坐标损失)", t_bin_size_II, logger)
         # ====================================================================
 
         # --- 验证阶段 ---
