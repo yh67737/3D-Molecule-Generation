@@ -480,10 +480,12 @@ def train(
         t2_stats = collections.defaultdict(lambda: {'count': 0, 'losses': []})
         # =================================================================
 
-        optimizer.zero_grad()
-
         # 使用 tqdm 创建进度条
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs}")  # desc=...: 设置进度条左侧的描述性文字，例如 Epoch 1/100
+
+        # ==================== 初始化用于显示的梯度范数变量 ====================
+        grad_norm_to_display = 0.0
+        # =======================================================================
        
         optimizer.zero_grad()
         for i, clean_batch in enumerate(pbar):
@@ -725,7 +727,12 @@ def train(
             # =====================================================================
 
             if is_sync_step:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                # ==================== 计算并更新要显示的梯度范数 ====================
+                total_grad_norm_before_clip = torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), max_norm=1.0
+                )
+                grad_norm_to_display = total_grad_norm_before_clip.item()
+                # =================================================================
                 optimizer.step()
                 # 更新完成后，清空梯度，为下一个累积周期做准备
                 optimizer.zero_grad()
@@ -750,6 +757,7 @@ def train(
                 'lossII_r': lossII_r.item(), # 坐标损失 Ⅱ
                 # 'lossII_b': lossII_b.item(),  # 边类型损失 Ⅱ
                 # 'p_noise_I_norm': norm_predicted_noise_I.item(),
+                'grad_norm': grad_norm_to_display, # 显示当前的梯度范数
                 # ==================== 新增的监控项 ====================
                 'p_x0_I_norm': norm_predicted_x0_I,    # 策略 I 预测 x0 的范数
                 't_x0_I_norm': norm_true_x0_I,      # 策略 I 真实 x0 的范数
