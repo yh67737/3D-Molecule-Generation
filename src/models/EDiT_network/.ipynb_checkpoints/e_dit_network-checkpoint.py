@@ -43,44 +43,20 @@ class MultiTaskHead(nn.Module):
             nn.Linear(args.hidden_dim, args.num_atom_types)
         )
 
-        # # --- (2) 坐标预测头 (Coordinate Head) ---
-        # # 完全借鉴 PosUpdate 的思想来计算 delta_pos
-        # # a. 两个独立的 MLP，用于将起始/终止节点的标量特征投影到边空间
-        # #    输入是节点的标量部分，输出维度可以是一个超参数，比如 hidden_dim
-        # self.left_lin_edge = nn.Linear(num_node_scalar, args.hidden_dim)
-        # self.right_lin_edge = nn.Linear(num_node_scalar, args.hidden_dim)
-
-        # # b. 一个 MLP (edge_lin)，用于融合所有信息并计算最终的标量“力”
-        # #    输入维度 = 边标量特征 + 节点交互特征 (hidden_dim)
-        # edge_lin_input_dim = num_edge_scalar + args.hidden_dim
-        # self.edge_lin = nn.Sequential(
-        #     nn.Linear(edge_lin_input_dim, args.hidden_dim),
-        #     nn.SiLU(),
-        #     nn.Linear(args.hidden_dim, 1) # 输出一个标量 (weight_edge)
-        # )
-
         # --- (2) 坐标预测头 (Coordinate Head) ---
-        # 拆分边特征中的标量部分和高阶部分
-        self.edge_scalar_irreps = Irreps([(mul, ir) for mul, ir in self.irreps_edge_in if ir.l == 0])
-        self.edge_high_irreps = Irreps([(mul, ir) for mul, ir in self.irreps_edge_in if ir.l > 0])
-
-        # 保存每个高阶分量的(mul, ir)元组（原始定义，无歧义）
-        self.high_irreps_details = list(self.edge_high_irreps)  # [(mul1, ir1), (mul2, ir2), ...]
-        self.num_high_types = len(self.high_irreps_details)
-        
-        # 节点特征投影层
+        # 完全借鉴 PosUpdate 的思想来计算 delta_pos
+        # a. 两个独立的 MLP，用于将起始/终止节点的标量特征投影到边空间
+        #    输入是节点的标量部分，输出维度可以是一个超参数，比如 hidden_dim
         self.left_lin_edge = nn.Linear(num_node_scalar, args.hidden_dim)
         self.right_lin_edge = nn.Linear(num_node_scalar, args.hidden_dim)
 
-        # 计算edge_lin的输入维度：标量部分 + 高阶范数 + 节点交互特征
-        # 每个高阶类型的每个mul对应一个范数标量
-        total_high_norms = sum(mul for mul, ir in self.high_irreps_details)
-        edge_lin_input_dim = self.edge_scalar_irreps.dim + total_high_norms + args.hidden_dim
-        
+        # b. 一个 MLP (edge_lin)，用于融合所有信息并计算最终的标量“力”
+        #    输入维度 = 边标量特征 + 节点交互特征 (hidden_dim)
+        edge_lin_input_dim = num_edge_scalar + args.hidden_dim
         self.edge_lin = nn.Sequential(
             nn.Linear(edge_lin_input_dim, args.hidden_dim),
             nn.SiLU(),
-            nn.Linear(args.hidden_dim, 1)  # 输出标量weight_edge
+            nn.Linear(args.hidden_dim, 1) # 输出一个标量 (weight_edge)
         )
 
         # --- (3) 化学键预测头 (Bond Prediction Head) ---
@@ -133,71 +109,24 @@ class MultiTaskHead(nn.Module):
         # c. 创建节点交互特征
         node_interaction_feat = left_feat * right_feat  # 元素级乘法
         
-        # d. 处理边特征：拆分标量部分和高阶部分，并计算高阶范数
-        # 验证e_final维度与irreps_edge_in匹配
-        assert e_final.shape[-1] == self.irreps_edge_in.dim, \
-            f"Edge feature dimension mismatch: e_final has {e_final.shape[-1]}, " \
-            f"but irreps_edge_in requires {self.irreps_edge_in.dim}"
-
-        # 手动计算各不可约分量的维度（替代 self.irreps_edge_in.split）
-        irreps_list = list(self.irreps_edge_in)  # [(mul1, ir1), (mul2, ir2), ...]
-        # 计算每个不可约分量在张量中的实际维度（mul * ir.dim）
-        component_dims = [mul * ir.dim for mul, ir in irreps_list]
-    
-        # 用 torch.split 手动拆分 e_final（按计算的维度拆分）
-        split_components = torch.split(e_final, component_dims, dim=-1)  # 替代 self.irreps_edge_in.split
-    
-        # 分离标量部分和高阶部分
-        scalar_components = []
-        high_components = []
-        for i, (mul, ir) in enumerate(irreps_list):
-            if ir.l == 0:
-                scalar_components.append(split_components[i])  # 标量分量
-            else:
-                high_components.append(split_components[i])    # 高阶分量
-
-        # 添加断言：验证高阶分量数量匹配
-        assert len(high_components) == self.num_high_types, \
-            "Mismatch between high_components and high_irreps_details length"
+        # d. 融合边特征和节点交互特征，计算标量“力”
+        edge_lin_input = torch.cat([e_final, node_interaction_feat], dim=-1)
+        weight_edge = self.edge_lin(edge_lin_input) # shape: [num_edges, 1]
         
-        # 拼接原始标量部分 [num_edges, edge_scalar_dim]
-        e_scalar = torch.cat(scalar_components, dim=-1)
-        
-        # 计算高阶分量的范数（每个mul的每个分量单独计算范数）
-        high_norms = []
-        for i, comp in enumerate(high_components):
-            # comp形状: [num_edges, mul * ir.dim]，需要先reshape为[num_edges, mul, ir.dim]
-            mul, ir = self.high_irreps_details[i]  # 直接使用初始化时保存的mul和ir
-            ir_dim = ir.dim  # 不可约表示的维度（如l=1对应3，l=2对应5等）
-            comp_reshaped = comp.view(comp.shape[0], mul, ir_dim)  # 重塑为[num_edges, mul, ir_dim]
-            norm = torch.norm(comp_reshaped, dim=-1)   # 计算每个mul分量的范数 [num_edges, mul]
-            high_norms.append(norm)
-        
-        # 拼接所有高阶范数 [num_edges, total_high_norms]
-        e_high_norms = torch.cat(high_norms, dim=-1)
-        
-        # e. 安全拼接所有标量特征：原始标量 + 高阶范数 + 节点交互特征
-        edge_lin_input = torch.cat([
-            e_scalar,          # 原始标量部分
-            e_high_norms,      # 高阶分量的范数（标量）
-            node_interaction_feat  # 节点交互特征（标量）
-        ], dim=-1)
-        
-        # f. 计算标量权重
-        weight_edge = self.edge_lin(edge_lin_input)  # [num_edges, 1]
-        
-        # g. 计算几何信息
+        # e. 计算几何信息
         relative_vec = r_t_final[row] - r_t_final[col]
         distance = torch.linalg.norm(relative_vec, dim=-1, keepdim=True) + 1e-8
         
-        # h. 计算力向量
+        # f. 计算方向性的、带距离衰减的力向量
         force_edge = weight_edge * (relative_vec / distance) / (distance + 1.0)
 
-        # i. 聚合得到每个节点的总位移
+        # g. 聚合得到每个节点的总位移 delta_pos
         delta_pos_all_nodes = scatter_sum(force_edge, row, dim=0, dim_size=h_final.shape[0])
 
-        # j. 预测坐标
+        # h. [关键] 将更新量加到原始的加噪坐标上，得到对 x₀ 的预测
         predicted_r0_all_nodes = r_t_final + delta_pos_all_nodes
+
+        # i. 只保留目标节点的预测结果
         predicted_r0 = predicted_r0_all_nodes[target_node_mask]
 
 

@@ -742,7 +742,7 @@ def train(
             if is_sync_step:
                 # ==================== 计算并更新要显示的梯度范数 ====================
                 total_grad_norm_before_clip = torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), max_norm=1.0
+                    model.parameters(), max_norm=20.0
                 )
                 grad_norm_to_display = total_grad_norm_before_clip.item()
                 # =================================================================
