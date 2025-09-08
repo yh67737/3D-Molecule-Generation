@@ -79,6 +79,7 @@ class MultiTaskHead(nn.Module):
         
         self.edge_lin = nn.Sequential(
             nn.Linear(edge_lin_input_dim, args.hidden_dim),
+            nn.LayerNorm(args.hidden_dim), # <--- 添加归一化
             nn.SiLU(),
             nn.Linear(args.hidden_dim, 1)  # 输出标量weight_edge
         )

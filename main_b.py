@@ -91,8 +91,8 @@ def get_args_parser():
 
     # 训练流程
     parser.add_argument('--epochs', type=int, default=500, help='Total number of training epochs')
-    parser.add_argument('--learning_rate', type=float, default=1e-5, help='Learning rate for the Adam optimizer(model)')
-    parser.add_argument('--lr_min_factor', type=float, default=0.1, 
+    parser.add_argument('--learning_rate', type=float, default=1e-4, help='Learning rate for the Adam optimizer(model)')
+    parser.add_argument('--lr_min_factor', type=float, default=0.001, 
                     help="学习率下限因子，最终学习率 = lr_min_factor × 初始学习率")
     parser.add_argument('--pos_noise_std', type=float, default=0.05,
                     help="坐标噪声增强的标准差，用于在训练时对节点位置添加高斯噪声作为数据增强")
@@ -193,7 +193,7 @@ def get_args_parser():
     # 环生成指导网络
     parser.add_argument('--ring_guide_ckpt', type=str, default='./src/models/ring_network/ring_predictor_epoch_50.pt', help='Path to pre-trained ring guidance network checkpoint.')
 
-    parser.add_argument('--optimizer', type=str, default='adamw', help='Optimizer (e.g., adamw, sgd).')
+    parser.add_argument('--optimizer', type=str, default='sam', help='Optimizer (e.g., adamw, sgd).')
     parser.add_argument('--weight_decay', type=float, default=1e-2, help='Weight decay for optimizer.')
     parser.add_argument('--warmup_epochs', type=int, default=10, help='Number of warmup epochs for LR scheduler.')
     
