@@ -209,12 +209,12 @@ if __name__ == '__main__':
     # 2. 添加你想从命令行控制的参数
     #    - 首先，让参数文件的路径本身变成一个参数，这样更灵活！
     parser.add_argument('--args_path', type=str, 
-                        default='./saved_args/args_2025-08-27_11-59-13.pt', 
+                        default='./saved_args/args_2025-09-07_13-25-53.pt', 
                         help='Path to the saved arguments .pt file')
     
     #    - 模型路径
     parser.add_argument('--model_ckpt', type=str, 
-                        default='./output/2025-08-27_11-59-13/checkpoints/best_model.pth',
+                        default='./output/2025-09-07_13-25-53/checkpoints/best_model.pth',
                         help='Override the model checkpoint path from the args file.')
 
     #    - 生成分子的最大原子数 (default=None)
@@ -229,7 +229,7 @@ if __name__ == '__main__':
 
     #    - 要生成的分子总数 (default=None)
     parser.add_argument('--num_generate', type=int, 
-                        default=25, 
+                        default=3, 
                         help='(Optional) Override the total number of molecules to generate.')
     # --------------------------------
 

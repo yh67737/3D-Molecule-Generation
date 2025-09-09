@@ -7,6 +7,7 @@ from tqdm import tqdm
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import CosineAnnealingLR  # 导入 CosineAnnealingLR
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts # 需要导入新的类
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 import os
 import collections
 
@@ -520,6 +521,20 @@ def train(
         T_mult=2,           # 下一个周期是上一个的 2 倍长 (50, 100, 200...)
         eta_min=lr_min_factor * args.learning_rate
     )
+    # 使用 ReduceLROnPlateau 调度器
+    # lr_factor=0.5
+    # lr_patience=3
+
+    # lr_scheduler = ReduceLROnPlateau(
+    #     optimizer,
+    #     mode='min',          # 监控的指标(lossII_r)需要减小
+    #     factor=lr_factor,          # 当指标不再改善时，学习率乘以 0.5
+    #     patience=lr_patience,          # 容忍 3 个 epoch 指标不改善
+    #     verbose=True,        # 当学习率更新时在控制台打印消息
+    #     threshold=0.001,     # 只有当新旧指标差异大于此阈值时才认为有改善
+    #     min_lr=args.lr_min_factor * args.learning_rate # 学习率的下限
+    # )
+    # logger.info(f"学习率调度器已设置为 ReduceLROnPlateau，监控指标: 'avg_lossII_r', 耐心值: {lr_patience}, 衰减因子: {lr_factor}")
 
     best_val_loss = float('inf')
     best_epoch = 0
@@ -893,8 +908,8 @@ def train(
         logger.info(log_str)
 
         # ==================== 在 epoch 结束时记录分布 ====================
-        log_timestep_distribution(t1_stats, epoch, "I (全局微调 - 坐标损失)", t_bin_size_I, logger)
-        log_timestep_distribution(t2_stats, epoch, "II (局部生成 - 坐标损失)", t_bin_size_II, logger)
+        # log_timestep_distribution(t1_stats, epoch, "I (全局微调 - 坐标损失)", t_bin_size_I, logger)
+        # log_timestep_distribution(t2_stats, epoch, "II (局部生成 - 坐标损失)", t_bin_size_II, logger)
         # ====================================================================
 
         # --- 验证阶段 ---
@@ -946,6 +961,7 @@ def train(
                 torch.save(best_model_state, best_model_path)
         # 更新学习率调度器
         lr_scheduler.step()
+        # lr_scheduler.step(avg_lossII_r)
             
     logger.info("训练完成。")
     logger.info(f"最终，最佳模型发现在 Epoch {best_epoch}，验证损失为: {best_val_loss:.4f}")
