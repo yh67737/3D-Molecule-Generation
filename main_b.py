@@ -19,6 +19,8 @@ from src.models.EDiT_network.e_dit_network import E_DiT_Network
 from src.training.train_B import train
 from src.training.scheduler import HierarchicalDiffusionScheduler
 from dataset_for_json import JsonFragmentDataset
+from torch.utils.data import RandomSampler
+from src.utils.custom_sampler import DistributedFixedLengthRandomSampler
 
 class AverageMeter:
     """Computes and stores the average and current value"""
@@ -88,6 +90,8 @@ def get_args_parser():
     parser.add_argument('--device', type=str, default='cuda', choices=['cuda', 'cpu'], help='Device to use for training.')
     parser.add_argument('--val_log_freq', type=int, default=5)
     parser.add_argument('--val_thre', type=int, default=10)
+    parser.add_argument('--resume_ckpt', type=str, default=None, 
+                        help="断点加载参数路径 (Path to checkpoint to resume training from)")
 
     # 训练流程
     parser.add_argument('--epochs', type=int, default=500, help='Total number of training epochs')
@@ -101,8 +105,6 @@ def get_args_parser():
     parser.add_argument('--w_r', type=float, default=1.0, help='Weight for coordinate loss')
     parser.add_argument('--w_b', type=float, default=1.0, help='Weight for bond type loss')
     parser.add_argument('--lambda_aux', type=float, default=0.01, help='Weight for auxiliary loss term in D3PM')
-    # 验证配置
-    parser.add_argument('--batch_ratio_val', type=int, default=10, help='Ratio to determine number of validation samples (num_val_samples = batch_size * batch_ratio)')
     # 保存路径
     # parser.add_argument('--output_dir', type=str, default='./checkpoints', help='Path to save the model')
     # 扩散过程
@@ -127,30 +129,32 @@ def get_args_parser():
                         help='Directory containing some JSON fragment files.')  ###
     # parser.add_argument('--fragment_data_dir', type=str, default='./prepared_data/gdb9_bfs_fragments_json', help='Directory containing the JSON fragment files.')
     parser.add_argument('--val_split_percentage', type=float, default=0.1, help='Percentage of data to use for validation.')
-    parser.add_argument('--train_batch_size', type=int, default=32)
-    parser.add_argument('--val_batch_size', type=int, default=32)
+    parser.add_argument('--train_batch_size', type=int, default=512)
+    parser.add_argument('--val_batch_size', type=int, default=512)
+    parser.add_argument('--batch_ratio_val', type=int, default=256, help='Ratio to determine number of validation samples (num_val_samples = batch_size * batch_ratio)')
+    parser.add_argument('--batch_ratio_train', type=int, default=256, help='Ratio to determine number of training samples per epoch (num_train_samples = batch_size * batch_ratio)')
     parser.add_argument('--num_workers', type=int, default=4)
     parser.add_argument('--accumulation_steps', type=int, default=8)
 
     # E-DiT参数
     # --- 模型架构参数 (Model Architecture) ---
     g_arch = parser.add_argument_group('Architecture')
-    g_arch.add_argument('--num_blocks', type=int, default=4, help='Number of E-DiT blocks.')
-    g_arch.add_argument('--num_heads', type=int, default=4, help='Number of attention heads.')
+    g_arch.add_argument('--num_blocks', type=int, default=6, help='Number of E-DiT blocks.')
+    g_arch.add_argument('--num_heads', type=int, default=8, help='Number of attention heads.')
     g_arch.add_argument('--norm_layer', type=str, default='layer', help='Type of normalization layer (e.g., "layer").')
-    g_arch.add_argument('--time_embed_dim', type=int, default=64, help='Dimension of timestep embedding.')
+    g_arch.add_argument('--time_embed_dim', type=int, default=128, help='Dimension of timestep embedding.')
 
     # --- Irreps 参数 (Irreps Definitions) ---
     g_irreps = parser.add_argument_group('Irreps')
-    g_irreps.add_argument('--irreps_node_hidden', type=str, default='64x0e+32x1o+16x2e',
+    g_irreps.add_argument('--irreps_node_hidden', type=str, default='128x0e+64x1o+32x2e',
                           help='Hidden node feature irreps.')
-    g_irreps.add_argument('--irreps_edge', type=str, default='64x0e+32x1o+16x2e', help='Hidden edge feature irreps.')
+    g_irreps.add_argument('--irreps_edge', type=str, default='128x0e+64x1o+32x2e', help='Hidden edge feature irreps.')
     g_irreps.add_argument('--irreps_node_attr', type=str, default='6x0e', help='Node attribute (atom type) irreps.')
     g_irreps.add_argument('--irreps_edge_attr_type', type=str, default='5x0e',
                           help='Edge attribute (bond type) irreps.')
     g_irreps.add_argument('--irreps_sh', type=str, default='1x0e+1x1e+1x2e', help='Spherical harmonics irreps.')
     g_irreps.add_argument('--irreps_head', type=str, default='64x0e+32x1o+16x2e', help='Single attention head irreps.')
-    g_irreps.add_argument('--irreps_mlp_mid', type=str, default='128x0e+64x1o+32x2e',
+    g_irreps.add_argument('--irreps_mlp_mid', type=str, default='256x0e+128x1o+64x2e',
                           help='Irreps for the middle layer of FFN.')
     g_irreps.add_argument('--irreps_pre_attn', type=str, default=None,
                           help='Optional irreps for pre-attention linear layer.')
@@ -159,10 +163,10 @@ def get_args_parser():
     g_embed = parser.add_argument_group('Embeddings')
     g_embed.add_argument('--num_atom_types', type=int, default=6, help='Number of atom types for embedding.')
     g_embed.add_argument('--num_bond_types', type=int, default=5, help='Number of bond types for embedding.')
-    g_embed.add_argument('--node_embedding_hidden_dim', type=int, default=64,
+    g_embed.add_argument('--node_embedding_hidden_dim', type=int, default=128,
                          help='Hidden dimension in node embedding MLP.')
-    g_embed.add_argument('--bond_embedding_dim', type=int, default=64, help='Hidden dimension in edge embedding MLP.')
-    g_embed.add_argument('--edge_update_hidden_dim', type=int, default=64,
+    g_embed.add_argument('--bond_embedding_dim', type=int, default=128, help='Hidden dimension in edge embedding MLP.')
+    g_embed.add_argument('--edge_update_hidden_dim', type=int, default=128,
                          help='Hidden dimension in EdgeUpdateNetwork MLP.')
     g_embed.add_argument('--num_rbf', type=int, default=128, help='Number of radial basis functions.')
     g_embed.add_argument('--rbf_cutoff', type=float, default=5.0, help='Cutoff radius for RBF.')
@@ -179,7 +183,7 @@ def get_args_parser():
 
     # --- 输出头参数 (Output Head) ---
     g_output = parser.add_argument_group('OutputHead')
-    g_output.add_argument('--hidden_dim', type=int, default=64,
+    g_output.add_argument('--hidden_dim', type=int, default=128,
                           help='Hidden dimension for the final MLP in output heads.')
 
     # --- 训练和正则化 (Training & Regularization) ---
@@ -395,19 +399,51 @@ def main(args):
 
     logger.info(f"Train dataset size: {len(train_dataset)}, Validation dataset size: {len(val_dataset)}")
 
+    # 计算每个 epoch 需要抽取的样本数
+    num_train_samples_per_epoch = args.train_batch_size * args.batch_ratio_train
+    num_val_samples_per_epoch = args.val_batch_size * args.batch_ratio_val
+
+    logger.info(f"定义一个 'epoch' 包含 {num_train_samples_per_epoch} 个训练样本和 {num_val_samples_per_epoch} 个验证样本。")
+
     # 创建DataLoader
+    # if args.distributed:
+    #     train_sampler = DistributedSampler(train_dataset, shuffle=True)
+    #     val_sampler = DistributedSampler(val_dataset, shuffle=False)
+    # else:
+    #     train_sampler = None
+    #     val_sampler = None
+    # 创建 DataLoader 的 Sampler
     if args.distributed:
-        train_sampler = DistributedSampler(train_dataset, shuffle=True)
-        val_sampler = DistributedSampler(val_dataset, shuffle=False)
+        # 使用自定义分布式采样器
+        train_sampler = DistributedFixedLengthRandomSampler(
+            train_dataset, 
+            num_samples_per_epoch=num_train_samples_per_epoch,
+            seed=args.seed
+        )
+        val_sampler = DistributedFixedLengthRandomSampler(
+            val_dataset,
+            num_samples_per_epoch=num_val_samples_per_epoch,
+            seed=args.seed
+        )
     else:
-        train_sampler = None
-        val_sampler = None
+        # 在单 GPU 情况下，使用标准的 RandomSampler
+        # 它内置了对有放回采样和指定样本数的支持
+        train_sampler = RandomSampler(
+            train_dataset, 
+            replacement=True, 
+            num_samples=num_train_samples_per_epoch
+        )
+        val_sampler = RandomSampler(
+            val_dataset, 
+            replacement=True, 
+            num_samples=num_val_samples_per_epoch
+        )
 
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.train_batch_size,
         sampler=train_sampler,
-        shuffle=(train_sampler is None), # 只有在非分布式时才启用shuffle
+        shuffle=False, # 当使用自定义 sampler 时，shuffle 必须为 False
         num_workers=args.num_workers,
         pin_memory=True,
         drop_last=True,
