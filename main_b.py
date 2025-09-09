@@ -100,6 +100,10 @@ def get_args_parser():
                     help="学习率下限因子，最终学习率 = lr_min_factor × 初始学习率")
     parser.add_argument('--pos_noise_std', type=float, default=0.05,
                     help="坐标噪声增强的标准差，用于在训练时对节点位置添加高斯噪声作为数据增强")
+    parser.add_argument('--warmup_epochs_for_EDiT', type=int, default=5, 
+                         help='Number of epochs for linear warmup.')
+    parser.add_argument('--warmup_factor', type=float, default=1e-2, 
+                         help='The initial learning rate will be this factor times the base learning rate.')
     # 损失权重
     parser.add_argument('--w_a', type=float, default=1.0, help='Weight for atom type loss')
     parser.add_argument('--w_r', type=float, default=1.0, help='Weight for coordinate loss')

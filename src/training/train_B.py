@@ -539,6 +539,16 @@ def train(
     start_epoch = 1
     best_val_loss = float('inf')
     best_epoch = 0
+    
+    # 计算 Warmup 的总步数
+    # len(train_loader) 是每个 epoch 的迭代（step）次数
+    num_train_steps_per_epoch = len(train_loader)
+    total_warmup_steps = args.warmup_epochs_for_EDiT * num_train_steps_per_epoch
+    base_lr = args.learning_rate # 保存基础学习率
+    initial_warmup_lr = base_lr * args.warmup_factor
+    
+    logger.info(f"学习率预热已启用，将持续 {args.warmup_epochs_for_EDiT} 个 epochs ({total_warmup_steps} 步)。")
+    logger.info(f"学习率将从 {initial_warmup_lr:.2e} 线性增长到 {base_lr:.2e}。")
 
     if args.resume_ckpt and os.path.isfile(args.resume_ckpt):
         logger.info(f"正在从检查点恢复训练: {args.resume_ckpt}")
@@ -656,6 +666,19 @@ def train(
        
         optimizer.zero_grad()
         for i, clean_batch in enumerate(pbar):
+            # 在每个训练步中，手动调整学习率
+            # (epoch 从1开始, i 从0开始)
+            current_step = (epoch - 1) * num_train_steps_per_epoch + i
+            if current_step < total_warmup_steps:
+                # 计算当前预热阶段的学习率乘子
+                # +1 是为了确保 lr_scale 从一个很小的值开始而不是0
+                lr_scale = (current_step + 1) / total_warmup_steps
+                # 线性插值
+                current_lr = initial_warmup_lr + lr_scale * (base_lr - initial_warmup_lr)
+                
+                # 直接将计算出的学习率应用到优化器
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] = current_lr
 
             clean_batch = clean_batch.to(device)
 
@@ -1030,8 +1053,9 @@ def train(
                 best_model_path = os.path.join(args.checkpoints_dir, 'best_model.pth')
                 torch.save(best_model_state, best_model_path)
         # 更新学习率调度器
-        lr_scheduler.step()
         # lr_scheduler.step(avg_lossII_r)
+        if epoch >= args.warmup_epochs_for_EDiT:
+            lr_scheduler.step()
             
     logger.info("训练完成。")
     logger.info(f"最终，最佳模型发现在 Epoch {best_epoch}，验证损失为: {best_val_loss:.4f}")
