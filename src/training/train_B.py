@@ -536,8 +536,76 @@ def train(
     # )
     # logger.info(f"学习率调度器已设置为 ReduceLROnPlateau，监控指标: 'avg_lossII_r', 耐心值: {lr_patience}, 衰减因子: {lr_factor}")
 
+    start_epoch = 1
     best_val_loss = float('inf')
     best_epoch = 0
+
+    if args.resume_ckpt and os.path.isfile(args.resume_ckpt):
+        logger.info(f"正在从检查点恢复训练: {args.resume_ckpt}")
+        
+        # 加载 checkpoint 文件到 CPU，以避免 GPU 内存冲突
+        checkpoint = torch.load(args.resume_ckpt, map_location='cpu')
+
+        # 1. 恢复模型权重
+        #    处理分布式（DDP）和非分布式模型保存的 state_dict 差异
+        model_state_dict = checkpoint['model_state_dict']
+        if args.distributed:
+            # DDP 模型保存的键会带有 'module.' 前缀，我们需要确保加载时匹配
+            # 如果当前是 DDP 模型，而保存的不是，则需要添加前缀
+            # 通常更简单的方法是直接加载到 model.module
+            model.module.load_state_dict(model_state_dict)
+        else:
+            # 如果当前不是 DDP，但保存的是 DDP 模型权重，需要移除 'module.' 前缀
+            # from collections import OrderedDict
+            # new_state_dict = OrderedDict()
+            # for k, v in model_state_dict.items():
+            #     if k.startswith('module.'):
+            #         name = k[7:] # remove `module.`
+            #         new_state_dict[name] = v
+            #     else:
+            #         new_state_dict[k] = v
+            # model.load_state_dict(new_state_dict)
+            model.load_state_dict(model_state_dict)
+
+        # 2. 恢复优化器状态
+        if 'optimizer_model_state_dict' in checkpoint:
+            optimizer.load_state_dict(checkpoint['optimizer_model_state_dict'])
+            logger.info("优化器状态已恢复。")
+
+        # 3. 恢复学习率调度器状态
+        if 'scheduler_model_state_dict' in checkpoint:
+            lr_scheduler.load_state_dict(checkpoint['scheduler_model_state_dict'])
+            logger.info("学习率调度器状态已恢复。")
+
+        # 4. 恢复训练周期和最佳验证损失
+        if 'epoch' in checkpoint:
+            start_epoch = checkpoint['epoch'] + 1
+            logger.info(f"将从 Epoch {start_epoch} 开始训练。")
+        
+        # 从 best_model.pth 恢复时用这个
+        if 'best_val_loss' in checkpoint:
+             best_val_loss = checkpoint['best_val_loss']
+             logger.info(f"已恢复之前的最佳验证损失: {best_val_loss:.4f}")
+        # 从 checkpoint_epoch_xx.pth 恢复时用这个
+        elif 'validation_loss' in checkpoint:
+            best_val_loss = checkpoint.get('best_val_loss', checkpoint['validation_loss']) # 兼容两种保存方式
+            logger.info(f"已恢复之前的最佳验证损失: {best_val_loss:.4f}")
+
+        # 5. 恢复 AMP loss scaler 的状态 (如果使用)
+        if loss_scaler is not None and 'loss_scaler_state_dict' in checkpoint:
+            loss_scaler.load_state_dict(checkpoint['loss_scaler_state_dict'])
+            logger.info("AMP loss scaler 状态已恢复。")
+            
+        logger.info("检查点加载完成。")
+    
+    else:
+        if args.resume_ckpt:
+            logger.warning(f"指定的检查点文件未找到: {args.resume_ckpt}。将从头开始训练。")
+        else:
+            logger.info("未指定检查点，将从头开始训练。")
+        # 这些变量的初始化移到这里，确保逻辑清晰
+        best_val_loss = float('inf')
+        best_epoch = 0
     
     logger.info(f"模型检查点将保存在: {args.checkpoints_dir}")
     logger.info("开始训练...")
@@ -551,14 +619,14 @@ def train(
     t_bin_size_II = 100
     # ==========================================================
 
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch, args.epochs + 1):
         # 将模型设置为“训练模式”
         # 它会通知模型中所有具有不同训练/评估行为的层（主要是 Dropout 层和 BatchNorm 层）切换到它们的训练状态。
         # Dropout 层在训练时会随机“丢弃”一些神经元，以防止过拟合；在评估时则不会丢弃，会使用所有神经元。
         # BatchNorm 层在训练时会使用当前批次的均值和方差进行归一化，并更新其内部的全局统计量；在评估时则会使用已学习到的全局统计量。
         model.train()  
 
-        if args.distributed:
+        if args.distributed and hasattr(train_sampler, 'set_epoch'):
             train_sampler.set_epoch(epoch)
 
         # 初始化一个变量，用于累加当前这个 epoch 内所有批次的损失值
@@ -953,6 +1021,8 @@ def train(
                 best_model_state = {
                     'epoch': epoch,
                     'model_state_dict': model_state_to_save,
+                    'optimizer_model_state_dict': optimizer.state_dict(),
+                    'scheduler_model_state_dict': lr_scheduler.state_dict(),
                     'best_val_loss': best_val_loss,
                     'args': args
                 }
