@@ -133,8 +133,10 @@ class HierarchicalDiffusionScheduler:
 
         self.alpha_bars = self.alpha_bars_full[:T1 + 1]
 
-        alpha_bar_at_T1 = self.alpha_bars_full[T1]
-        self.delta_bars = alpha_bar_at_T1 * self.gamma_bars
+        # alpha_bar_at_T1 = self.alpha_bars_full[T1]
+        # 现在的delta_bars相当于alpha_bars
+        # self.delta_bars = alpha_bar_at_T1 * self.gamma_bars
+        self.delta_bars = self.gamma_bars
 
         min_val = 1e-7  # 这是一个可以调整的超参数，1e-7 或 1e-8 是一个不错的起点
         

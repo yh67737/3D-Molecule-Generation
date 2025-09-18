@@ -463,117 +463,117 @@ def generate_molecule(
         print(f"  -> 环预测结果 (pring_out): {fragment.pring_out.squeeze().tolist()}")
 
         # --- 4. 阶段二去噪 (T1 循环) ---
-        print(f"步骤 4: 阶段二去噪 (T1={scheduler.T1} -> 1)")
-        # 这里的 fragment 是上一步的结果，我们继续对它进行微调
-        for t_gen in trange(scheduler.T1, 0, -1, desc="  Phase 2 Denoising"):
-            t = torch.tensor([t_gen], device=device) # 将 t_gen 转换成一个PyTorch 张量 (Tensor)
+        # print(f"步骤 4: 阶段二去噪 (T1={scheduler.T1} -> 1)")
+        # # 这里的 fragment 是上一步的结果，我们继续对它进行微调
+        # for t_gen in trange(scheduler.T1, 0, -1, desc="  Phase 2 Denoising"):
+        #     t = torch.tensor([t_gen], device=device) # 将 t_gen 转换成一个PyTorch 张量 (Tensor)
             
-            # 准备模型输入，这次是全局预测
-            target_node_mask = torch.ones(fragment.num_nodes, dtype=torch.bool, device=device)
-            target_edge_mask = torch.ones(fragment.num_edges, dtype=torch.bool, device=device)
+        #     # 准备模型输入，这次是全局预测
+        #     target_node_mask = torch.ones(fragment.num_nodes, dtype=torch.bool, device=device)
+        #     target_edge_mask = torch.ones(fragment.num_edges, dtype=torch.bool, device=device)
 
-            if t_gen == scheduler.T1:
-                num_target_edges = target_edge_mask.sum().item()
-                # 注意这里的 num_target_edges 应该等于 fragment.num_edges
-                assert num_target_edges == fragment.num_edges
-                print(f"\n  -> [阶段二] 开始全局微调。将对全部 {num_target_edges} 条边进行预测。")
+        #     if t_gen == scheduler.T1:
+        #         num_target_edges = target_edge_mask.sum().item()
+        #         # 注意这里的 num_target_edges 应该等于 fragment.num_edges
+        #         assert num_target_edges == fragment.num_edges
+        #         print(f"\n  -> [阶段二] 开始全局微调。将对全部 {num_target_edges} 条边进行预测。")
             
-            predictions = model(fragment, t, target_node_mask, target_edge_mask)
-            pred_r0 = predictions['predicted_r0']
-            pred_logits_a = predictions['atom_type_logits']
-            pred_logits_b = predictions['bond_logits']
+        #     predictions = model(fragment, t, target_node_mask, target_edge_mask)
+        #     pred_r0 = predictions['predicted_r0']
+        #     pred_logits_a = predictions['atom_type_logits']
+        #     pred_logits_b = predictions['bond_logits']
 
-            if t_gen == scheduler.T1:
-                print(f"  -> [阶段二] 模型输出 pred_logits_b 的维度: {pred_logits_b.shape}")
-                # 验证维度是否匹配
-                assert pred_logits_b.shape[0] == num_target_edges, \
-                    f"预测的边数 ({pred_logits_b.shape[0]}) 与目标边数 ({num_target_edges}) 不匹配!"
+        #     if t_gen == scheduler.T1:
+        #         print(f"  -> [阶段二] 模型输出 pred_logits_b 的维度: {pred_logits_b.shape}")
+        #         # 验证维度是否匹配
+        #         assert pred_logits_b.shape[0] == num_target_edges, \
+        #             f"预测的边数 ({pred_logits_b.shape[0]}) 与目标边数 ({num_target_edges}) 不匹配!"
 
-            if t_gen % 2 == 0:
-                with torch.no_grad():
-                    pos_norm = torch.linalg.norm(fragment.pos, dim=-1).mean()
-                    pred_r0_norm = torch.linalg.norm(pred_r0, dim=-1).mean()
-                    # print(f"\n  [T1={t_gen:04d}] Pos Norm: {pos_norm:.4f}, Predicted R0 Norm: {pred_r0_norm:.4f}")
+        #     if t_gen % 2 == 0:
+        #         with torch.no_grad():
+        #             pos_norm = torch.linalg.norm(fragment.pos, dim=-1).mean()
+        #             pred_r0_norm = torch.linalg.norm(pred_r0, dim=-1).mean()
+        #             # print(f"\n  [T1={t_gen:04d}] Pos Norm: {pos_norm:.4f}, Predicted R0 Norm: {pred_r0_norm:.4f}")
 
-            # # 全局采样
-            # pred_noise = scheduler.get_predicted_noise_from_r0(fragment.pos, t.expand(fragment.num_nodes), pred_r0, 'alpha')
+        #     # # 全局采样
+        #     # pred_noise = scheduler.get_predicted_noise_from_r0(fragment.pos, t.expand(fragment.num_nodes), pred_r0, 'alpha')
             
-            # c1 = 1.0 / torch.sqrt(scheduler.alphas[t])
-            # c2 = (1.0 - scheduler.alphas[t]) / torch.sqrt(1.0 - scheduler.alpha_bars[t])
-            # pos_mean = c1 * (fragment.pos - c2 * pred_noise)
+        #     # c1 = 1.0 / torch.sqrt(scheduler.alphas[t])
+        #     # c2 = (1.0 - scheduler.alphas[t]) / torch.sqrt(1.0 - scheduler.alpha_bars[t])
+        #     # pos_mean = c1 * (fragment.pos - c2 * pred_noise)
             
-            # if t_gen > 1:
-            #     noise = torch.randn_like(pos_mean)
-            #     sigma_t = torch.sqrt(scheduler.posterior_variance_alpha[t])
-            #     fragment.pos = pos_mean + sigma_t * noise
-            # else:
-            #     fragment.pos = pos_mean
+        #     # if t_gen > 1:
+        #     #     noise = torch.randn_like(pos_mean)
+        #     #     sigma_t = torch.sqrt(scheduler.posterior_variance_alpha[t])
+        #     #     fragment.pos = pos_mean + sigma_t * noise
+        #     # else:
+        #     #     fragment.pos = pos_mean
 
-            # #DDIM采样实现
-            # alpha_bar_t = scheduler.alpha_bars[t]
-            # alpha_bar_t_minus_1 = scheduler.alpha_bars[t-1] if t_gen > 1 else torch.tensor(1.0, device=device)
+        #     # #DDIM采样实现
+        #     # alpha_bar_t = scheduler.alpha_bars[t]
+        #     # alpha_bar_t_minus_1 = scheduler.alpha_bars[t-1] if t_gen > 1 else torch.tensor(1.0, device=device)
             
-            # x_t = fragment.pos
+        #     # x_t = fragment.pos
             
-            # c1 = torch.sqrt(1.0 - alpha_bar_t)
-            # c2 = torch.sqrt(alpha_bar_t)
-            # predicted_x0 = (x_t - c1 * pred_noise) / c2
+        #     # c1 = torch.sqrt(1.0 - alpha_bar_t)
+        #     # c2 = torch.sqrt(alpha_bar_t)
+        #     # predicted_x0 = (x_t - c1 * pred_noise) / c2
             
-            # c3 = torch.sqrt(alpha_bar_t_minus_1)
-            # c4 = torch.sqrt(1.0 - alpha_bar_t_minus_1)
-            # pos_t_minus_1 = c3 * predicted_x0 + c4 * pred_noise
+        #     # c3 = torch.sqrt(alpha_bar_t_minus_1)
+        #     # c4 = torch.sqrt(1.0 - alpha_bar_t_minus_1)
+        #     # pos_t_minus_1 = c3 * predicted_x0 + c4 * pred_noise
 
-            # 采用 DDPM 后验采样：mu + sigma * eps，其中 x_recon = 第0步坐标
-            x_t = fragment.pos
-            x_recon = pred_r0  # 这里的 predicted_r0 已经是 x0
-            t_batch = t.expand(fragment.num_nodes).long()
+        #     # 采用 DDPM 后验采样：mu + sigma * eps，其中 x_recon = 第0步坐标
+        #     x_t = fragment.pos
+        #     x_recon = pred_r0  # 这里的 predicted_r0 已经是 x0
+        #     t_batch = t.expand(fragment.num_nodes).long()
 
-            coef_x0 = scheduler.coef_x0_alpha[t_batch].unsqueeze(-1)
-            coef_xt = scheduler.coef_xt_alpha[t_batch].unsqueeze(-1)
-            sigma   = scheduler.std_alpha[t_batch].unsqueeze(-1)
+        #     coef_x0 = scheduler.coef_x0_alpha[t_batch].unsqueeze(-1)
+        #     coef_xt = scheduler.coef_xt_alpha[t_batch].unsqueeze(-1)
+        #     sigma   = scheduler.std_alpha[t_batch].unsqueeze(-1)
 
-            mu = coef_x0 * x_recon + coef_xt * x_t
-            if t_gen > 1:
-                eps = torch.randn_like(mu)
-                pos_t_minus_1 = mu + sigma * eps
-            else:
-                pos_t_minus_1 = mu  # 最后一步不加噪声
+        #     mu = coef_x0 * x_recon + coef_xt * x_t
+        #     if t_gen > 1:
+        #         eps = torch.randn_like(mu)
+        #         pos_t_minus_1 = mu + sigma * eps
+        #     else:
+        #         pos_t_minus_1 = mu  # 最后一步不加噪声
             
-            fragment.pos = pos_t_minus_1
+        #     fragment.pos = pos_t_minus_1
             
-            fragment.x = scheduler.compute_discrete_t_minus_1(            
-                x_t=fragment.x[target_node_mask],
-                pred_x0_logits=pred_logits_a,
-                t=t_gen,
-                schedule_type='alpha',
-                is_atom=True
-            )
-            # fragment.edge_attr = scheduler.compute_discrete_t_minus_1(
-            #     x_t=fragment.edge_attr[target_edge_mask],
-            #     pred_x0_logits=symmetrized_logits_b_global, # <-- 使用 symmetrized_logits_b_global
-            #     t=t_gen,
-            #     schedule_type='alpha',
-            #     is_atom=False
-            # )
+        #     fragment.x = scheduler.compute_discrete_t_minus_1(            
+        #         x_t=fragment.x[target_node_mask],
+        #         pred_x0_logits=pred_logits_a,
+        #         t=t_gen,
+        #         schedule_type='alpha',
+        #         is_atom=True
+        #     )
+        #     # fragment.edge_attr = scheduler.compute_discrete_t_minus_1(
+        #     #     x_t=fragment.edge_attr[target_edge_mask],
+        #     #     pred_x0_logits=symmetrized_logits_b_global, # <-- 使用 symmetrized_logits_b_global
+        #     #     t=t_gen,
+        #     #     schedule_type='alpha',
+        #     #     is_atom=False
+        #     # )
 
-            fragment.edge_attr = sample_symmetric_bonds(
-                edge_index=fragment.edge_index[:, target_edge_mask],
-                x_t_bonds=fragment.edge_attr[target_edge_mask], # 传入更新前的状态
-                pred_logits_b=pred_logits_b,
-                scheduler=scheduler,
-                t_gen=t_gen,
-                schedule_type='alpha'
-            )
+        #     fragment.edge_attr = sample_symmetric_bonds(
+        #         edge_index=fragment.edge_index[:, target_edge_mask],
+        #         x_t_bonds=fragment.edge_attr[target_edge_mask], # 传入更新前的状态
+        #         pred_logits_b=pred_logits_b,
+        #         scheduler=scheduler,
+        #         t_gen=t_gen,
+        #         schedule_type='alpha'
+        #     )
 
-        print(f"  -> [坐标] 阶段二微调后 (中心化前): Shape={fragment.pos.shape}\n{fragment.pos}")
+        # print(f"  -> [坐标] 阶段二微调后 (中心化前): Shape={fragment.pos.shape}\n{fragment.pos}")
 
             
         # T1 循环结束，我们得到了一个新增了原子并微调过的分子片段
         
         # 更新环指导信息
-        print(f"  -> 再次更新环指导信息...")
-        fragment = get_ring_guidance(p_model, fragment)
-        print(f"  -> 环预测结果 (pring_out): {fragment.pring_out.squeeze().tolist()}")
+        # print(f"  -> 再次更新环指导信息...")
+        # fragment = get_ring_guidance(p_model, fragment)
+        # print(f"  -> 环预测结果 (pring_out): {fragment.pring_out.squeeze().tolist()}")
 
         # 将坐标零中心化
         print("  -> 将分子坐标零中心化。")

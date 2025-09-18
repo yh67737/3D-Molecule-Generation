@@ -116,7 +116,7 @@ def get_args_parser():
                         help="'alpha' 调度的完整长度 (The full length of the alpha schedule)")
     parser.add_argument('--T1', type=int, default=100, 
                         help="'alpha' 调度实际使用的步数 (The actual steps used in the alpha schedule)")
-    parser.add_argument('--T2', type=int, default=900, 
+    parser.add_argument('--T2', type=int, default=1000, 
                         help="'gamma'/'delta' 调度的步数 (The steps for the gamma/delta schedule)")
     parser.add_argument('--s', type=float, default=0.008, 
                         help="Cosine schedule 的偏移量 (The offset for the Cosine schedule)")
@@ -129,16 +129,16 @@ def get_args_parser():
     # --- 数据集参数 ---
     parser.add_argument('--data_split_path', type=str, default='./data_splits',
                         help='Directory to save/load data split indices.')
-    parser.add_argument('--fragment_data_dir', type=str, default='./prepared_data/gdb9_unique_subgraphs_json',
+    parser.add_argument('--fragment_data_dir', type=str, default='./prepared_data/32for_test',
                         help='Directory containing some JSON fragment files.')  ###
     # parser.add_argument('--fragment_data_dir', type=str, default='./prepared_data/gdb9_bfs_fragments_json', help='Directory containing the JSON fragment files.')
     parser.add_argument('--val_split_percentage', type=float, default=0.1, help='Percentage of data to use for validation.')
-    parser.add_argument('--train_batch_size', type=int, default=256)
-    parser.add_argument('--val_batch_size', type=int, default=256)
-    parser.add_argument('--batch_ratio_val', type=int, default=512, help='Ratio to determine number of validation samples (num_val_samples = batch_size * batch_ratio)')
-    parser.add_argument('--batch_ratio_train', type=int, default=512, help='Ratio to determine number of training samples per epoch (num_train_samples = batch_size * batch_ratio)')
+    parser.add_argument('--train_batch_size', type=int, default=2)
+    parser.add_argument('--val_batch_size', type=int, default=2)
+    parser.add_argument('--batch_ratio_val', type=int, default=10, help='Ratio to determine number of validation samples (num_val_samples = batch_size * batch_ratio)')
+    parser.add_argument('--batch_ratio_train', type=int, default=10, help='Ratio to determine number of training samples per epoch (num_train_samples = batch_size * batch_ratio)')
     parser.add_argument('--num_workers', type=int, default=4)
-    parser.add_argument('--accumulation_steps', type=int, default=8)
+    parser.add_argument('--accumulation_steps', type=int, default=1)
 
     # E-DiT参数
     # --- 模型架构参数 (Model Architecture) ---
