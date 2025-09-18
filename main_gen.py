@@ -17,7 +17,7 @@ from src.models.ring_network.train_loop_network import RingPredictor
 from src.training.scheduler import HierarchicalDiffusionScheduler
 
 def load_args(path):
-    args = torch.load(path)  # 使用 PyTorch 的加载方式
+    args = torch.load(path, weights_only=False)  # 使用 PyTorch 的加载方式
     print(f"[✓] 参数加载成功: {path}")
     return args
 
@@ -101,7 +101,7 @@ def main(args):
     # 模型实例化与加载
     model = E_DiT_Network(args).to(args.device)
     # 1. 先加载整个 checkpoint 文件
-    checkpoint = torch.load(args.model_ckpt, map_location=args.device)
+    checkpoint = torch.load(args.model_ckpt, map_location=args.device, weights_only=False)
     
     # 2. 从 checkpoint 中提取出模型的状态字典
     model_state_dict = checkpoint['model_state_dict']
@@ -118,7 +118,7 @@ def main(args):
         hidden_nf=64,   # EGNN隐藏层维度
         n_layers=4      # EGNN层数
     ).to(args.device)
-    p_model.load_state_dict(torch.load(args.ring_guide_ckpt, map_location=args.device))
+    p_model.load_state_dict(torch.load(args.ring_guide_ckpt, map_location=args.device, weights_only=False))
     p_model.eval()
 
     scheduler = HierarchicalDiffusionScheduler(
@@ -209,12 +209,12 @@ if __name__ == '__main__':
     # 2. 添加你想从命令行控制的参数
     #    - 首先，让参数文件的路径本身变成一个参数，这样更灵活！
     parser.add_argument('--args_path', type=str, 
-                        default='./saved_args/args_2025-09-07_13-25-53.pt', 
+                        default='./saved_args/args_2025-09-16_14-50-27.pt', 
                         help='Path to the saved arguments .pt file')
     
     #    - 模型路径
     parser.add_argument('--model_ckpt', type=str, 
-                        default='./output/2025-09-07_13-25-53/checkpoints/best_model.pth',
+                        default='./output/2025-09-16_14-50-27/checkpoints/checkpoint_epoch_20.pth',
                         help='Override the model checkpoint path from the args file.')
 
     #    - 生成分子的最大原子数 (default=None)

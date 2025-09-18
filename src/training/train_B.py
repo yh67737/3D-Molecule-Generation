@@ -554,7 +554,7 @@ def train(
         logger.info(f"正在从检查点恢复训练: {args.resume_ckpt}")
         
         # 加载 checkpoint 文件到 CPU，以避免 GPU 内存冲突
-        checkpoint = torch.load(args.resume_ckpt, map_location='cpu')
+        checkpoint = torch.load(args.resume_ckpt, map_location='cpu', weights_only=False)
 
         # 1. 恢复模型权重
         #    处理分布式（DDP）和非分布式模型保存的 state_dict 差异
