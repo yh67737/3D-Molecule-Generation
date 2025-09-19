@@ -11,197 +11,166 @@ from e3nn.nn.models.v2106.gate_points_message_passing import tp_path_exists
 import collections
 from e3nn.math import perm
 
-_RESCALE = True
-def sort_irreps_even_first(irreps):
-    """Sorts Irreps with even parity first, then odd, then by L."""
-    irreps = o3.Irreps(irreps)
-
-    def sort_key(mul_ir):
-        mul, ir = mul_ir
-        return (ir.p, ir.l, mul)  # Sort by parity, then l, then multiplicity
-
-    sorted_irreps = sorted(irreps, key=sort_key)
-
-    p = []
-    i = 0
-    for mul, ir in irreps:
-        i_new = sorted_irreps.index((mul, ir))
-        p.append(i_new)
-        i += 1
-
-    return o3.Irreps(sorted_irreps), p, None  # Returning None for backward compatibility
-
-
-def irreps2gate(irreps):
-    """Decomposes Irreps for a gated activation."""
-    irreps = o3.Irreps(irreps)
-    scalars = o3.Irreps([(mul, ir) for mul, ir in irreps if ir.l == 0 and ir.p == 1])
-    gates = o3.Irreps([(mul, "0e") for mul, ir in irreps if ir.l > 0])
-    gated = o3.Irreps([(mul, ir) for mul, ir in irreps if ir.l > 0])
-    return scalars, gates, gated
 
 class TensorProductRescale(torch.nn.Module):
-    """
-    A wrapper around e3nn.o3.TensorProduct that includes rescaling and biases.
-    This is a foundational, robust implementation.
-    """
-
-    def __init__(
-            self,
-            irreps_in1,
-            irreps_in2,
-            irreps_out,
-            instructions,
-            bias=True,
-            rescale=True,
-            internal_weights=False,
-            shared_weights=False,
-            normalization=None
-    ):
+    def __init__(self,
+        irreps_in1, irreps_in2, irreps_out,
+        instructions,
+        bias=True, rescale=True,
+        internal_weights=None, shared_weights=None,
+        normalization=None):
+        
         super().__init__()
-        self.irreps_in1 = o3.Irreps(irreps_in1)
-        self.irreps_in2 = o3.Irreps(irreps_in2)
-        self.irreps_out = o3.Irreps(irreps_out)
+
+        self.irreps_in1 = irreps_in1
+        self.irreps_in2 = irreps_in2
+        self.irreps_out = irreps_out
         self.rescale = rescale
-
-        self.tp = o3.TensorProduct(
-            self.irreps_in1,
-            self.irreps_in2,
-            self.irreps_out,
-            instructions,
-            internal_weights=internal_weights,
-            shared_weights=shared_weights,
-            normalization=normalization,
-        )
-
         self.use_bias = bias
+        
+        # e3nn.__version__ == 0.4.4
+        # Use `path_normalization` == 'none' to remove normalization factor
+        self.tp = o3.TensorProduct(irreps_in1=self.irreps_in1,
+            irreps_in2=self.irreps_in2, irreps_out=self.irreps_out, 
+            instructions=instructions, normalization=normalization,
+            internal_weights=internal_weights, shared_weights=shared_weights, 
+            path_normalization='none')
+        
+        self.init_rescale_bias()
+    
+    
+    def calculate_fan_in(self, ins):
+        return {
+            'uvw': (self.irreps_in1[ins.i_in1].mul * self.irreps_in2[ins.i_in2].mul),
+            'uvu': self.irreps_in2[ins.i_in2].mul,
+            'uvv': self.irreps_in1[ins.i_in1].mul,
+            'uuw': self.irreps_in1[ins.i_in1].mul,
+            'uuu': 1,
+            'uvuv': 1,
+            'uvu<v': 1,
+            'u<vw': self.irreps_in1[ins.i_in1].mul * (self.irreps_in2[ins.i_in2].mul - 1) // 2,
+        }[ins.connection_mode]
+        
+        
+    def init_rescale_bias(self) -> None:
+        
+        irreps_out = self.irreps_out
+        # For each zeroth order output irrep we need a bias
+        # Determine the order for each output tensor and their dims
+        self.irreps_out_orders = [int(irrep_str[-2]) for irrep_str in str(irreps_out).split('+')]
+        self.irreps_out_dims = [int(irrep_str.split('x')[0]) for irrep_str in str(irreps_out).split('+')]
+        self.irreps_out_slices = irreps_out.slices()
+        
+        # Store tuples of slices and corresponding biases in a list
+        self.bias = None
+        self.bias_slices = []
+        self.bias_slice_idx = []
+        self.irreps_bias = self.irreps_out.simplify()
+        self.irreps_bias_orders = [int(irrep_str[-2]) for irrep_str in str(self.irreps_bias).split('+')]
+        self.irreps_bias_parity = [irrep_str[-1] for irrep_str in str(self.irreps_bias).split('+')]
+        self.irreps_bias_dims = [int(irrep_str.split('x')[0]) for irrep_str in str(self.irreps_bias).split('+')]
         if self.use_bias:
-            irreps_bias = o3.Irreps([(mul, ir) for mul, ir in self.irreps_out if ir.l == 0])
-            self.bias = torch.nn.ParameterList([
-                torch.nn.Parameter(torch.zeros(mul)) for mul, ir in irreps_bias
-            ])
+            self.bias = []
+            for slice_idx in range(len(self.irreps_bias_orders)):
+                if self.irreps_bias_orders[slice_idx] == 0 and self.irreps_bias_parity[slice_idx] == 'e':
+                    out_slice = self.irreps_bias.slices()[slice_idx]
+                    out_bias = torch.nn.Parameter(
+                        torch.zeros(self.irreps_bias_dims[slice_idx], dtype=self.tp.weight.dtype))
+                    self.bias += [out_bias]
+                    self.bias_slices += [out_slice]
+                    self.bias_slice_idx += [slice_idx]
+        self.bias = torch.nn.ParameterList(self.bias)
+       
+        self.slices_sqrt_k = {}
+        with torch.no_grad():
+            # Determine fan_in for each slice, it could be that each output slice is updated via several instructions
+            slices_fan_in = {}  # fan_in per slice
+            for instr in self.tp.instructions:
+                slice_idx = instr[2]
+                fan_in = self.calculate_fan_in(instr)
+                slices_fan_in[slice_idx] = (slices_fan_in[slice_idx] +
+                                            fan_in if slice_idx in slices_fan_in.keys() else fan_in)
+            for instr in self.tp.instructions:
+                slice_idx = instr[2]
+                if self.rescale:
+                    sqrt_k = 1 / slices_fan_in[slice_idx] ** 0.5
+                else:
+                    sqrt_k = 1.
+                self.slices_sqrt_k[slice_idx] = (self.irreps_out_slices[slice_idx], sqrt_k)
+                
+            # Re-initialize weights in each instruction
+            if self.tp.internal_weights:
+                for weight, instr in zip(self.tp.weight_views(), self.tp.instructions):
+                    # The tensor product in e3nn already normalizes proportional to 1 / sqrt(fan_in), and the weights are by
+                    # default initialized with unif(-1,1). However, we want to be consistent with torch.nn.Linear and
+                    # initialize the weights with unif(-sqrt(k),sqrt(k)), with k = 1 / fan_in
+                    slice_idx = instr[2]
+                    if self.rescale:
+                        sqrt_k = 1 / slices_fan_in[slice_idx] ** 0.5
+                        weight.data.mul_(sqrt_k)
+                    #else:
+                    #    sqrt_k = 1.
+                    #
+                    #if self.rescale:
+                        #weight.data.uniform_(-sqrt_k, sqrt_k)
+                    #    weight.data.mul_(sqrt_k)
+                    #self.slices_sqrt_k[slice_idx] = (self.irreps_out_slices[slice_idx], sqrt_k)
+
+            # Initialize the biases
+            #for (out_slice_idx, out_slice, out_bias) in zip(self.bias_slice_idx, self.bias_slices, self.bias):
+            #    sqrt_k = 1 / slices_fan_in[out_slice_idx] ** 0.5
+            #    out_bias.uniform_(-sqrt_k, sqrt_k)
+                
 
     def forward_tp_rescale_bias(self, x, y, weight=None):
-        # Calculate fan_in for rescaling
-        fan_in = self.irreps_in1.dim * self.irreps_in2.dim
-
-        # Perform the tensor product
+        
         out = self.tp(x, y, weight)
-
-        # Rescale the output
-        if self.rescale:
-            out = out / (fan_in ** 0.5)
-
-        # Add bias to the scalar part
-        if self.use_bias and len(self.bias) > 0:
-            out_bias = torch.cat([b for b in self.bias], dim=0)
-            out[:, :out_bias.shape[0]] += out_bias
-
+        
+        #if self.rescale and self.tp.internal_weights:
+        #    for (slice, slice_sqrt_k) in self.slices_sqrt_k.values():
+        #        out[:, slice] /= slice_sqrt_k
+        if self.use_bias:
+            for (_, slice, bias) in zip(self.bias_slice_idx, self.bias_slices, self.bias):
+                #out[:, slice] += bias
+                out.narrow(1, slice.start, slice.stop - slice.start).add_(bias)
         return out
+        
 
     def forward(self, x, y, weight=None):
-        return self.forward_tp_rescale_bias(x, y, weight)
-
+        out = self.forward_tp_rescale_bias(x, y, weight)
+        return out
+    
 
 class FullyConnectedTensorProductRescale(TensorProductRescale):
-    def __init__(self, irreps_in1, irreps_in2, irreps_out,
-                 bias=True, rescale=True,
-                 internal_weights=None, shared_weights=None,
-                 normalization=None):
-
-        irreps_in1 = o3.Irreps(irreps_in1)
-        irreps_in2 = o3.Irreps(irreps_in2)
-        irreps_out = o3.Irreps(irreps_out)
-
-        instructions = []
-        for i_out, (mul_out, ir_out) in enumerate(irreps_out):
-            for i_in1, (mul_in1, ir_in1) in enumerate(irreps_in1):
-                for i_in2, (mul_in2, ir_in2) in enumerate(irreps_in2):
-                    if ir_out in ir_in1 * ir_in2:
-                        instructions.append((i_in1, i_in2, i_out, "uvw", True, mul_out * mul_in1 * mul_in2))
-
-        super().__init__(irreps_in1, irreps_in2, irreps_out, instructions,
-                         bias=bias, rescale=rescale,
-                         internal_weights=True,
-                         shared_weights=True,
-                         normalization=normalization)
-
-
-def DepthwiseTensorProduct(irreps_node_input, irreps_edge_attr, irreps_node_output,
-                           internal_weights=False, bias=True):
-    '''
-        The irreps of output is pre-determined.
-        `irreps_node_output` is used to get certain types of vectors.
-
-        一个工厂函数，用于构建并返回一个“深度（depth-wise）”张量积模块
-        函数本身不进行计算，而是返回一个模块(功能是执行节点特征和边特征的“深度张量积”运算)
-        实现DTP的计算路径构建，区别于普通的FCT
-
-        与全连接张量积（每个输出通道都依赖于所有输入通道的组合）不同，
-        深度张量积更加高效，它的一个输出通道只依赖于一个输入通道（通常是节点特征的通道），
-
-        Args:
-            irreps_node_input (o3.Irreps): 节点输入特征的Irreps。
-            irreps_edge_attr (o3.Irreps): 边属性特征的Irreps (通常是球谐函数)。
-            irreps_node_output (o3.Irreps): 期望的输出Irreps的“目标类型”。
-            internal_weights (bool): 张量积是否包含内部可学习权重。
-            bias (bool): 是否使用偏置。
-
-        Returns:
-            TensorProductRescale: 一个配置好的、可执行深度张量积的模块实例。
-    '''
-    irreps_output = []
-    instructions = []
-
-    for i, (mul, ir_in) in enumerate(irreps_node_input):
-        for j, (_, ir_edge) in enumerate(irreps_edge_attr):
-            for ir_out in ir_in * ir_edge:
-                if ir_out in irreps_node_output or ir_out == o3.Irrep(0, 1):
-                    k = len(irreps_output)
-                    irreps_output.append((mul, ir_out))
-                    instructions.append((i, j, k, 'uvu', True))
-
-    irreps_output = o3.Irreps(irreps_output)
-    irreps_output, p, _ = sort_irreps_even_first(irreps_output)  # irreps_output.sort()
-    instructions = [(i_1, i_2, p[i_out], mode, train)
-                    for i_1, i_2, i_out, mode, train in instructions]
-    tp = TensorProductRescale(irreps_node_input, irreps_edge_attr,
-                              irreps_output, instructions,
-                              internal_weights=internal_weights,
-                              shared_weights=internal_weights,
-                              bias=bias, rescale=_RESCALE)
-    return tp
-
+    def __init__(self,
+        irreps_in1, irreps_in2, irreps_out,
+        bias=True, rescale=True,
+        internal_weights=None, shared_weights=None,
+        normalization=None):
+        
+        instructions = [
+            (i_1, i_2, i_out, 'uvw', True, 1.0)
+            for i_1, (_, ir_1) in enumerate(irreps_in1)
+            for i_2, (_, ir_2) in enumerate(irreps_in2)
+            for i_out, (_, ir_out) in enumerate(irreps_out)
+            if ir_out in ir_1 * ir_2
+        ]
+        super().__init__(irreps_in1, irreps_in2, irreps_out,
+            instructions=instructions,
+            bias=bias, rescale=rescale,
+            internal_weights=internal_weights, shared_weights=shared_weights,
+            normalization=normalization)
+        
+    
 class LinearRS(FullyConnectedTensorProductRescale):
-    """
-    A robust E(3) equivariant Linear layer.
-    It takes one Irreps tensor as input and applies a linear transformation.
-    """
-
     def __init__(self, irreps_in, irreps_out, bias=True, rescale=True):
-        # The __init__ method correctly sets up the tensor product
-        # with '1x0e' as the second input's Irreps. This part is correct.
-        super().__init__(
-            irreps_in,
-            o3.Irreps('1x0e'),
-            irreps_out,
-            bias=bias,
-            rescale=rescale,
-            # This combination satisfies the e3nn assertion from the previous error
-            internal_weights=True,
-            shared_weights=True
-        )
-
-    def forward(self, x, **kwargs):
-        """
-        The forward method should only accept one input `x`.
-        """
-        # Create the trivial second input tensor `y` internally.
-        # It should have the same batch dimension as `x` and a feature dimension of 1.
-        y = torch.ones_like(x.narrow(1, 0, 1))
-
-        # Now, call the parent's forward method with both `x` and the created `y`.
-        out = super().forward(x, y)
+        super().__init__(irreps_in, o3.Irreps('1x0e'), irreps_out, 
+            bias=bias, rescale=rescale, internal_weights=True, 
+            shared_weights=True, normalization=None)
+    
+    def forward(self, x):
+        y = torch.ones_like(x[:, 0:1])
+        out = self.forward_tp_rescale_bias(x, y)
         return out
     
 

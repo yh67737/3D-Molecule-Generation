@@ -6,7 +6,7 @@ from torch_scatter import scatter
 from e3nn import o3
 
 from .radial_func import RadialProfile
-from .tensor_product_rescale import LinearRS, FullyConnectedTensorProductRescale, DepthwiseTensorProduct
+from .tensor_product_rescale import LinearRS, FullyConnectedTensorProductRescale, sort_irreps_even_first, TensorProductRescale
 
 _RESCALE = True
 _USE_BIAS = True
@@ -203,6 +203,33 @@ class ScaledScatter(torch.nn.Module):
     def extra_repr(self):
         return 'avg_aggregate_num={}'.format(self.avg_aggregate_num)
     
+def DepthwiseTensorProduct(irreps_node_input, irreps_edge_attr, irreps_node_output, 
+    internal_weights=False, bias=True):
+    '''
+        The irreps of output is pre-determined. 
+        `irreps_node_output` is used to get certain types of vectors.
+    '''
+    irreps_output = []
+    instructions = []
+    
+    for i, (mul, ir_in) in enumerate(irreps_node_input):
+        for j, (_, ir_edge) in enumerate(irreps_edge_attr):
+            for ir_out in ir_in * ir_edge:
+                if ir_out in irreps_node_output or ir_out == o3.Irrep(0, 1):
+                    k = len(irreps_output)
+                    irreps_output.append((mul, ir_out))
+                    instructions.append((i, j, k, 'uvu', True))
+        
+    irreps_output = o3.Irreps(irreps_output)
+    irreps_output, p, _ = sort_irreps_even_first(irreps_output) #irreps_output.sort()
+    instructions = [(i_1, i_2, p[i_out], mode, train)
+        for i_1, i_2, i_out, mode, train in instructions]
+    tp = TensorProductRescale(irreps_node_input, irreps_edge_attr,
+            irreps_output, instructions,
+            internal_weights=internal_weights,
+            shared_weights=internal_weights,
+            bias=bias, rescale=_RESCALE)
+    return tp  
 
 class EdgeDegreeEmbeddingNetwork(torch.nn.Module):
     def __init__(self, irreps_node_embedding, irreps_edge_attr, 

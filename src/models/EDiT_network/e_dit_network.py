@@ -28,9 +28,9 @@ class MultiTaskHead(nn.Module):
         self.irreps_final_edge_feature = Irreps(irreps_final_edge_feature) 
 
         # 原子类型预测头
-        self.node_scalar_proj = LinearRS(self.irreps_final_node_feature, args.irreps_node_attr)
+        self.node_scalar_proj = LinearRS(self.irreps_final_node_feature, Irreps(args.irreps_node_attr))
         # 化学键类型预测头
-        self.edge_scalar_proj = LinearRS(self.irreps_final_edge_feature, args.irreps_edge_attr_type)
+        self.edge_scalar_proj = LinearRS(self.irreps_final_edge_feature, Irreps(args.irreps_edge_attr_type))
         
     def forward(self,
                 h_final: torch.Tensor,
@@ -166,8 +166,8 @@ class E_DiT_Network(nn.Module):
         )
         # 多任务输出头
         self.output_heads = MultiTaskHead(
-            irreps_node_in=irreps_final_node_feature,
-            irreps_edge_in=irreps_final_edge_feature,
+            irreps_final_node_feature=irreps_final_node_feature,
+            irreps_final_edge_feature=irreps_final_edge_feature,
             args=args
         )
 

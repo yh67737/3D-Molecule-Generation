@@ -373,7 +373,7 @@ def main(args):
     num_fragments = len(full_dataset)
 
     # 加载或创建数据划分索引
-    split_file = os.path.join(args.data_split_path, 'bfs_json_split_indices.pt') 
+    split_file = os.path.join(args.data_split_path, 'bfs_json_split_indices_for32.pt') 
 
     if os.path.exists(split_file):
         logger.info(f"Loading existing data split from: {split_file}")

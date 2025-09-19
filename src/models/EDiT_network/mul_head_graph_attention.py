@@ -9,7 +9,6 @@ from .layer_norm import AdaEquiLayerNorm
 from .fast_activation import Activation, Gate
 from .drop import EquivariantDropout
 from .tensor_product_rescale import FullyConnectedTensorProductRescaleSwishGate, LinearRS, FullyConnectedTensorProductRescale, TensorProductRescale, irreps2gate, sort_irreps_even_first
-from .tensor_product_rescale import DepthwiseTensorProduct
 _RESCALE = True
 
 
@@ -97,7 +96,33 @@ def get_mul_0(irreps):
             mul_0 += mul
     return mul_0
 
-
+def DepthwiseTensorProduct(irreps_node_input, irreps_edge_attr, irreps_node_output, 
+    internal_weights=False, bias=True):
+    '''
+        The irreps of output is pre-determined. 
+        `irreps_node_output` is used to get certain types of vectors.
+    '''
+    irreps_output = []
+    instructions = []
+    
+    for i, (mul, ir_in) in enumerate(irreps_node_input):
+        for j, (_, ir_edge) in enumerate(irreps_edge_attr):
+            for ir_out in ir_in * ir_edge:
+                if ir_out in irreps_node_output or ir_out == o3.Irrep(0, 1):
+                    k = len(irreps_output)
+                    irreps_output.append((mul, ir_out))
+                    instructions.append((i, j, k, 'uvu', True))
+        
+    irreps_output = o3.Irreps(irreps_output)
+    irreps_output, p, _ = sort_irreps_even_first(irreps_output) #irreps_output.sort()
+    instructions = [(i_1, i_2, p[i_out], mode, train)
+        for i_1, i_2, i_out, mode, train in instructions]
+    tp = TensorProductRescale(irreps_node_input, irreps_edge_attr,
+            irreps_output, instructions,
+            internal_weights=internal_weights,
+            shared_weights=internal_weights,
+            bias=bias, rescale=_RESCALE)
+    return tp  
 
 class SeparableFCTP(torch.nn.Module):
     '''
