@@ -6,8 +6,8 @@ from torch_scatter import scatter
 from e3nn import o3
 
 from .radial_func import RadialProfile
-from .tensor_product_rescale import LinearRS, FullyConnectedTensorProductRescale, DepthwiseTensorProduct
-
+from .tensor_product_rescale import LinearRS, FullyConnectedTensorProductRescale, TensorProductRescale, sort_irreps_even_first
+from .tensor_product_rescale import DepthwiseTensorProduct
 _RESCALE = True
 _USE_BIAS = True
 
@@ -58,6 +58,12 @@ class GaussianRadialBasisLayer(torch.nn.Module):
         return 'mean_init_max={}, mean_init_min={}, std_init_max={}, std_init_min={}'.format(
             self.mean_init_max, self.mean_init_min, self.std_init_max, self.std_init_min)
 
+    def extra_repr(self):
+        # 辅助函数，用于打印模块信息
+        return 'mean_init_max={}, mean_init_min={}, std_init_max={}, std_init_min={}'.format(
+            self.mean_init_max, self.mean_init_min, self.std_init_max, self.std_init_min)
+
+
 
 _MAX_ATOM_TYPE = 6 # 5种原子类型+1种吸收态 
 
@@ -72,8 +78,7 @@ class NodeEmbeddingNetwork(nn.Module):
         - 初始纯标量(L=0)的节点irreps特征
     """
     
-    def __init__(self, irreps_node_embedding: str = '128x0e+64x1e+32x2e', 
-                 num_atom_types: int = _MAX_ATOM_TYPE, hidden_dim: int = 32, bias: bool = True):
+    def __init__(self, irreps_node_embedding: str = '128x0e+64x1e+32x2e', num_atom_types: int = _MAX_ATOM_TYPE, hidden_dim: int = 32, bias: bool = True):
         """
         Args:
             irreps_node_embedding (str): 输出的irreps字符串. 
@@ -132,12 +137,11 @@ _DEFAULT_NUM_BOND_TYPES = 5 # 无键、单键、双键、三键、芳香键
 class EdgeEmbeddingNetwork(nn.Module):
     def __init__(self,
                  irreps_sh: str = '1x0e+1x1o+1x2e',
-                 max_radius: float = 1000.0,
+                 max_radius: float = 5.0,
                  number_of_basis: int = 128,
                  num_bond_types: int = _DEFAULT_NUM_BOND_TYPES,
                  bond_embedding_dim: int = 32,
                  irreps_out_fused: str = '128x0e+64x1o+32x2e'):
-        
         super().__init__()
         self.max_radius = max_radius
         self.irreps_sh = o3.Irreps(irreps_sh)
@@ -188,6 +192,7 @@ class EdgeEmbeddingNetwork(nn.Module):
             "edge_vec": edge_vec
         }
 
+
 class ScaledScatter(torch.nn.Module):
     def __init__(self, avg_aggregate_num):
         super().__init__()
@@ -202,21 +207,21 @@ class ScaledScatter(torch.nn.Module):
     
     def extra_repr(self):
         return 'avg_aggregate_num={}'.format(self.avg_aggregate_num)
-    
+
 
 class EdgeDegreeEmbeddingNetwork(torch.nn.Module):
-    def __init__(self, irreps_node_embedding, irreps_edge_attr, 
-                 avg_aggregate_num, fc_neurons=[64, 64]): ### avg_aggregate_num
+    def __init__(self, irreps_node_embedding, irreps_edge_attr, avg_aggregate_num, fc_neurons=[64, 64]): ### avg_aggregate_num
         super().__init__()
-        self.exp = LinearRS(o3.Irreps('1x0e'), irreps_node_embedding, 
-            bias=_USE_BIAS, rescale=_RESCALE)
-        self.dw = DepthwiseTensorProduct(irreps_node_embedding, 
-            irreps_edge_attr, irreps_node_embedding, 
-            internal_weights=False, bias=False)
+        self.exp = LinearRS(o3.Irreps('1x0e'), irreps_node_embedding, bias=_USE_BIAS, rescale=_RESCALE)
+        self.dw = DepthwiseTensorProduct(
+            irreps_node_embedding,
+            irreps_edge_attr,
+            irreps_node_embedding,
+            internal_weights=False,
+            bias=False
+        )
         self.rad = RadialProfile(fc_neurons + [self.dw.tp.weight_numel])
-        for (slice, slice_sqrt_k) in self.dw.slices_sqrt_k.values():
-            self.rad.net[-1].weight.data[slice, :] *= slice_sqrt_k
-            self.rad.offset.data[slice] *= slice_sqrt_k
+
         self.proj = LinearRS(self.dw.irreps_out.simplify(), irreps_node_embedding)
         self.scale_scatter = ScaledScatter(avg_aggregate_num)
         
@@ -230,60 +235,6 @@ class EdgeDegreeEmbeddingNetwork(torch.nn.Module):
         node_features = self.scale_scatter(edge_features, edge_dst, dim=0, 
             dim_size=node_features.shape[0])
         return node_features
-
-
-class PositionalEncoding(nn.Module):
-    """
-    function：正弦/余弦位置编码模块-->编码仅与d_model和max_len有关，与词向量无关
-
-    """
-    def __init__(self, d_model: int, max_len: int = 500):
-        '''
-        Args:
-            d_model (int): The dimension of the embedding. 嵌入向量大小/节点特征h_0的维度大小
-            max_len (int): The maximum possible length of a sequence. 序列最大长度/最大原子数
-
-        '''
-        super(PositionalEncoding, self).__init__() # 构造方法初始化
-
-        ## 创建位置索引张量
-        # position张量包含所有可能的位置pos(从0到max_len-1)
-        # .unsqueeze(1)将position形状从 max_len]变为[max_len, 1]，为后续广播做准备
-        position = torch.arange(max_len, dtype=torch.float).unsqueeze(1) # [max_len, 1]
-
-        ## 计算频率：1 / 10000^(2i/d_model)
-        # torch.arange(0, d_model, 2)提取所有偶数维度索引[0, 2, 4, ...,](不包含d_model)
-        # `exp(x * (-log(y)))` 等价于 `y^(-x)`
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)) # [d_model//2]
-
-        ## 初始化位置编码矩阵
-        # 创建一个[max_len, d_model]大小的零矩阵，用于存放最终的编码结果
-        pe = torch.zeros(max_len, d_model)
-
-        ## 计算并填充pe偶数和奇数维度
-        # 利用PyTorch的广播机制，[max_len, 1]的position和[d_model/2]的div_term相乘得到[max_len, d_model//2]，其(pos, i)元素值为pos / 10000^(2i/d_model)
-        # pe[:, 0::2]选择所有偶数索引列
-        pe[:, 0::2] = torch.sin(position * div_term)
-        # pe[:, 1::2]选择所有奇数索引列
-        pe[:, 1::2] = torch.cos(position * div_term)
-
-        ## 将pe注册为模型的buffer
-        # register_buffer将pe矩阵作为模型状态的一部分保存下来(state_dict)
-        # 但它不是模型的参数，不会在反向传播时被更新梯度
-        # 对于存储固定的非训练的数据（如位置编码）是标准做法；好处是当调用 model.to(device) 时，这个buffer会自动被移动到相应设备
-        self.register_buffer('pe', pe) 
-
-    def forward(self, t: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            t (torch.Tensor): A tensor of shape [num_nodes] containing position indices.
-        Returns:
-            torch.Tensor: Positional encodings of shape [num_nodes, d_model].
-        """
-        # 输入t包含需要查找的位置索引,如[0, 1, 2, 0](张量)
-        # self.pe是预先计算好的[max_len, d_model]大小的编码表
-        # PyTorch索引机制将从pe表中取出第0, 1, 2, 0行，组成[4, d_model]的输出张量返回
-        return self.pe[t]
 
 
 class InputEmbeddingLayer(nn.Module):
@@ -306,9 +257,7 @@ class InputEmbeddingLayer(nn.Module):
                  bond_embedding_dim: int,
                  irreps_edge_fused: str,
                  # EdgeDegreeEmbeddingNetwork 参数
-                 avg_degree: float,
-                 # PositionalEncoding参数-->最大原子数
-                 max_seq_len: int = 100):
+                 avg_degree: float):
         super().__init__()
 
         # Irreps 定义
@@ -336,15 +285,6 @@ class InputEmbeddingLayer(nn.Module):
             fc_neurons=[num_rbf, num_rbf],
             avg_aggregate_num=avg_degree
         )
-
-        # 实例化位置编码模块
-        # 自动从irreps中提取节点编码标量部分的维度
-        self.scalar_dim = sum(mul for mul, ir in self.irreps_node_embedding if ir.l == 0)
-        if self.scalar_dim == 0:
-            raise ValueError("irreps_node_embedding must contain a scalar (0e) component for positional encoding.")
-        
-        # 实例化PositionalEncoding
-        self.positional_encoding = PositionalEncoding(d_model=self.scalar_dim, max_len=max_seq_len)
 
     def forward(self, data) -> dict:
         """
@@ -382,31 +322,17 @@ class InputEmbeddingLayer(nn.Module):
         # 最终节点特征融合
         final_node_features = initial_node_embedding + edge_degree_supplement
 
-        # 为节点特征添加位置编码
-        # 为批处理中的每个图生成从0开始的原子索引
-        num_atoms_per_graph = torch.bincount(data.batch)
-        atom_indices = torch.cat([torch.arange(n) for n in num_atoms_per_graph]).to(data.pos.device)
-
-        # 获取位置编码
-        pos_enc = self.positional_encoding(atom_indices)
-
-        # 将位置编码仅加到特征的标量部分
-        scalar_features = final_node_features.narrow(1, 0, self.scalar_dim)
-        higher_order_features = final_node_features.narrow(1, self.scalar_dim, final_node_features.shape[1] - self.scalar_dim)
-        
-        scalar_features_with_pe = scalar_features + pos_enc
-        
-        final_node_features_with_pe = torch.cat([scalar_features_with_pe, higher_order_features], dim=1)
-
         # 准备E-DiT Block的全部输入
         node_attr = data.x
-    
+
         return {
-            "node_input": final_node_features_with_pe, 
+            "node_input": final_node_features,
             "node_attr": node_attr,
             "edge_src": edge_info['edge_src'],
             "edge_dst": edge_info['edge_dst'],
             "edge_index": data.edge_index,
+            "edge_attr": edge_info['edge_attr_base'],
+            "edge_scalars": edge_info['edge_scalars_base'],
             "edge_input": edge_info['fused_edge_feature'],
             "edge_attr_type": data.edge_attr,
             "batch": data.batch
