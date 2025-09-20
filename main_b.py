@@ -15,7 +15,7 @@ from src.utils.logger import FileLogger # Equiformer提供的通用模块
 from timm.utils import NativeScaler # timm是一个强大的深度学习第三方库，需要安装
 # distributed training
 from src.utils import utils # highly general, boilerplate code for setting up distributed training in PyTorch and are not specifically tied to the Equiformer model or its task.
-from src.models.EDiT_network.e_dit_network import E_DiT_Network
+from src.models.Moldiff_network.model import MolDiff
 from src.training.train_B import train
 from src.training.scheduler import HierarchicalDiffusionScheduler
 from dataset_for_json import JsonFragmentDataset
@@ -129,7 +129,7 @@ def get_args_parser():
     # --- 数据集参数 ---
     parser.add_argument('--data_split_path', type=str, default='./data_splits',
                         help='Directory to save/load data split indices.')
-    parser.add_argument('--fragment_data_dir', type=str, default='./prepared_data/32for_test',
+    parser.add_argument('--fragment_data_dir', type=str, default='./prepared_data/gdb9_unique_subgraphs_json',
                         help='Directory containing some JSON fragment files.')  ###
     # parser.add_argument('--fragment_data_dir', type=str, default='./prepared_data/gdb9_bfs_fragments_json', help='Directory containing the JSON fragment files.')
     parser.add_argument('--val_split_percentage', type=float, default=0.1, help='Percentage of data to use for validation.')
@@ -140,63 +140,41 @@ def get_args_parser():
     parser.add_argument('--num_workers', type=int, default=4)
     parser.add_argument('--accumulation_steps', type=int, default=1)
 
-    # E-DiT参数
-    # --- 模型架构参数 (Model Architecture) ---
-    g_arch = parser.add_argument_group('Architecture')
-    g_arch.add_argument('--num_blocks', type=int, default=6, help='Number of E-DiT blocks.')
-    g_arch.add_argument('--num_heads', type=int, default=6, help='Number of attention heads.')
-    g_arch.add_argument('--norm_layer', type=str, default='layer', help='Type of normalization layer (e.g., "layer").')
-    g_arch.add_argument('--time_embed_dim', type=int, default=96, help='Dimension of timestep embedding.')
+    # +++ 5. 新增 MolDiff 及其骨干网络的架构参数 +++
+    g_model = parser.add_argument_group('MolDiff Model Architecture')
+    g_model.add_argument('--node_dim', type=int, default=256, help='Dimension for node features.')
+    g_model.add_argument('--edge_dim', type=int, default=64, help='Dimension for edge features.')
+    g_model.add_argument('--num_atom_types', type=int, default=6, help='Number of atom types for embedding.')
+    g_model.add_argument('--num_edge_types', type=int, default=5, help='Number of bond types for embedding.')
+    g_model.add_argument('--bond_len_loss', action='store_true', default=False,
+                         help='Enable bond length loss (Note: this is an internal loss, may not be used in the adapted training loop).')
 
-    # --- Irreps 参数 (Irreps Definitions) ---
-    g_irreps = parser.add_argument_group('Irreps')
-    g_irreps.add_argument('--irreps_node_hidden', type=str, default='96x0e+48x1o+24x2e',
-                          help='Hidden node feature irreps.')
-    g_irreps.add_argument('--irreps_edge', type=str, default='96x0e+48x1o+24x2e', help='Hidden edge feature irreps.')
-    g_irreps.add_argument('--irreps_node_attr', type=str, default='6x0e', help='Node attribute (atom type) irreps.')
-    g_irreps.add_argument('--irreps_edge_attr_type', type=str, default='5x0e',
-                          help='Edge attribute (bond type) irreps.')
-    g_irreps.add_argument('--irreps_sh', type=str, default='1x0e+1x1e+1x2e', help='Spherical harmonics irreps.')
-    g_irreps.add_argument('--irreps_head', type=str, default='64x0e+32x1o+16x2e', help='Single attention head irreps.')
-    g_irreps.add_argument('--irreps_mlp_mid', type=str, default='192x0e+96x1o+48x2e',
-                          help='Irreps for the middle layer of FFN.')
-    g_irreps.add_argument('--irreps_pre_attn', type=str, default=None,
-                          help='Optional irreps for pre-attention linear layer.')
+    # MolDiff 模型内部初始化所需的扩散参数
+    g_diff_internal = parser.add_argument_group('MolDiff Internal Diffusion Init')
+    g_diff_internal.add_argument('--num_timesteps', type=int, default=1000,
+                                 help='Number of timesteps for model internal setup (e.g., time embedding).')
+    g_diff_internal.add_argument('--time_dim', type=int, default=10, help='Dimension for time embedding.')
+    g_diff_internal.add_argument('--diff_pos_schedule', type=str, default='advance',
+                                 help='Beta schedule for position diffusion.')
+    g_diff_internal.add_argument('--diff_atom_schedule', type=str, default='advance',
+                                 help='Beta schedule for atom type diffusion.')
+    g_diff_internal.add_argument('--diff_bond_schedule', type=str, default='segment',
+                                 help='Beta schedule for bond type diffusion.')
+    g_diff_internal.add_argument('--atom_init_prob', type=str, default='tomask',
+                                 help='Initial probability strategy for atom types.')
+    g_diff_internal.add_argument('--bond_init_prob', type=str, default='absorb',
+                                 help='Initial probability strategy for bond types.')
+    g_diff_internal.add_argument('--bond_time_segment', type=int, nargs='+', default=[600, 400],
+                                 help='Time segments for bond segment schedule.')
 
-    # --- 嵌入层参数 (Embedding Layers) ---
-    g_embed = parser.add_argument_group('Embeddings')
-    g_embed.add_argument('--num_atom_types', type=int, default=6, help='Number of atom types for embedding.')
-    g_embed.add_argument('--num_bond_types', type=int, default=5, help='Number of bond types for embedding.')
-    g_embed.add_argument('--node_embedding_hidden_dim', type=int, default=96,
-                         help='Hidden dimension in node embedding MLP.')
-    g_embed.add_argument('--bond_embedding_dim', type=int, default=96, help='Hidden dimension in edge embedding MLP.')
-    g_embed.add_argument('--edge_update_hidden_dim', type=int, default=96,
-                         help='Hidden dimension in EdgeUpdateNetwork MLP.')
-    g_embed.add_argument('--num_rbf', type=int, default=96, help='Number of radial basis functions.')
-    g_embed.add_argument('--rbf_cutoff', type=float, default=5.0, help='Cutoff radius for RBF.')
-    g_embed.add_argument('--fc_neurons', type=int, nargs='+', default=[64, 64],
-                         help='List of hidden layer sizes for FC network in attention.')
-    g_embed.add_argument('--avg_degree', type=float, default=9.21, help='Average degree of nodes in the dataset.')
-
-    # --- 注意力机制参数 (Attention Mechanism) ---
-    g_attn = parser.add_argument_group('Attention')
-    g_attn.add_argument('--rescale_degree', action='store_true', default=False,
-                        help='If set, rescale features by node degree in attention.')
-    g_attn.add_argument('--nonlinear_message', action='store_true', default=False,
-                        help='If set, use non-linearity in message calculation.')
-
-    # --- 输出头参数 (Output Head) ---
-    g_output = parser.add_argument_group('OutputHead')
-    g_output.add_argument('--hidden_dim', type=int, default=128,
-                          help='Hidden dimension for the final MLP in output heads.')
-
-    # --- 训练和正则化 (Training & Regularization) ---
-    g_train = parser.add_argument_group('Training')
-    g_train.add_argument('--alpha_drop', type=float, default=0.2, help='Dropout rate for attention scores.')
-    g_train.add_argument('--proj_drop', type=float, default=0.0,
-                         help='Dropout rate for the final projection layer in attention/FFN.')
-    g_train.add_argument('--out_drop', type=float, default=0.0, help='Dropout rate for the output heads.')
-    g_train.add_argument('--drop_path_rate', type=float, default=0.0, help='Stochastic depth drop rate.')
+    # Denoiser (NodeEdgeNet) 骨干网络参数
+    g_denoiser = parser.add_argument_group('Denoiser (NodeEdgeNet)')
+    g_denoiser.add_argument('--denoiser_backbone', type=str, default='NodeEdgeNet', help='Backbone for the denoiser.')
+    g_denoiser.add_argument('--denoiser_blocks', type=int, default=6, help='Number of blocks in NodeEdgeNet.')
+    g_denoiser.add_argument('--denoiser_cutoff', type=float, default=15,
+                            help='Cutoff distance for graph construction.')
+    g_denoiser.add_argument('--denoiser_use_gate', action='store_true', default=True,
+                            help='Use gate mechanism in NodeEdgeNet.')
     
     # 环生成指导网络
     parser.add_argument('--ring_guide_ckpt', type=str, default='./src/models/ring_network/ring_predictor_epoch_50.pt', help='Path to pre-trained ring guidance network checkpoint.')
@@ -477,30 +455,76 @@ def main(args):
     np.random.seed(args.seed + args.rank)
     random.seed(args.seed + args.rank)
 
-    logger.info("--- Initializing Models ---")
-    
-    # 实例化各个模块
-    
-    # b. 生成网络
-    generator_network = E_DiT_Network(args)
-    
-    # 将模型移动到指定设备
+    logger.info("--- Initializing MolDiff Model ---")
+
+    # +++ 1. 构建 MolDiff 需要的 config 对象 +++
+    from argparse import Namespace
+    config = Namespace()
+
+    # 模型主参数
+    config.node_dim = args.node_dim
+    config.edge_dim = args.edge_dim
+    config.bond_len_loss = args.bond_len_loss
+
+    segment_diff_for_bond = [
+        {'scale_start': 0.9999, 'scale_end': 0.001, 'width': 3},
+        {'scale_start': 0.001, 'scale_end': 0.0001, 'width': 2}
+    ]
+
+    # 扩散参数
+    config.diff = Namespace(
+        num_timesteps=args.num_timesteps,
+        time_dim=args.time_dim,
+        categorical_space='discrete',  # MolDiff 支持 'discrete' 和 'continuous'
+        diff_pos=Namespace(
+            beta_schedule=args.diff_pos_schedule
+        ),
+
+        diff_atom=Namespace(
+            beta_schedule=args.diff_atom_schedule,
+            init_prob=args.atom_init_prob
+        ),
+
+        diff_bond=Namespace(
+            beta_schedule=args.diff_bond_schedule,
+            init_prob=args.bond_init_prob,
+            time_segment=args.bond_time_segment,
+            segment_diff=segment_diff_for_bond
+        )
+    )
+
+    # Denoiser (NodeEdgeNet) 参数
+    config.denoiser = Namespace(
+        backbone=args.denoiser_backbone,
+        num_blocks=args.denoiser_blocks,
+        cutoff=args.denoiser_cutoff,
+        use_gate=args.denoiser_use_gate
+    )
+
+    # 实例化模型
+    generator_network = MolDiff(
+        config,
+        num_node_types=args.num_atom_types,
+        num_edge_types=args.num_edge_types
+    )
+
+    # --- 2. 移动模型到设备 ---
     generator_network.to(device)
-    logger.info("Models moved to device.")
+    logger.info("Model moved to device.")
 
     # 模型分布式训练封装
     if args.distributed:
         generator_network = torch.nn.parallel.DistributedDataParallel(
-            generator_network, 
+            generator_network,
             device_ids=[args.local_rank],
-            find_unused_parameters=True 
+            find_unused_parameters=True
         )
         logger.info("Models wrapped with DistributedDataParallel (find_unused_parameters=True).")
     # 记录模型和参数统计
     if is_main_process:
         logger.info("--- Model Architectures ---")
         logger.info(generator_network)
-        
+
         total_params_generator = sum(p.numel() for p in generator_network.parameters() if p.requires_grad)
         logger.info("--- Parameter Statistics ---")
         logger.info(f"Generator Network Trainable Params: {total_params_generator / 1e6:.2f} M")
@@ -519,7 +543,7 @@ def main(args):
     # 模型训练
     scheduler = HierarchicalDiffusionScheduler(
         num_atom_types=args.num_atom_types,
-        num_bond_types=args.num_bond_types,
+        num_bond_types=args.num_edge_types,
         T_full=args.T_full,
         T1=args.T1,
         T2=args.T2,
