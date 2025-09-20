@@ -12,7 +12,7 @@ from pathlib import Path
 
 from src.utils.logger import FileLogger
 from generate_qm9 import generate_molecule
-from src.models.EDiT_network.e_dit_network import E_DiT_Network
+from src.models.Moldiff_network.model import MolDiff
 from src.models.ring_network.train_loop_network import RingPredictor
 from src.training.scheduler import HierarchicalDiffusionScheduler
 
@@ -98,8 +98,47 @@ def main(args):
     np.random.seed(args.seed + args.rank)
     random.seed(args.seed + args.rank)
 
-    # 模型实例化与加载
-    model = E_DiT_Network(args).to(args.device)
+    from argparse import Namespace
+
+    # --- Model Config ---
+    config = Namespace()
+    config.node_dim = args.node_dim
+    config.edge_dim = args.edge_dim
+    config.bond_len_loss = getattr(args, 'bond_len_loss', False)
+
+    # --- Denoiser Config ---
+    config.denoiser = Namespace(
+        backbone=args.denoiser_backbone,
+        num_blocks=args.denoiser_num_blocks,
+        cutoff=args.denoiser_cutoff,
+        use_gate=args.denoiser_use_gate
+    )
+
+    # --- Diffusion Config ---
+    segment_diff_for_bond = [
+        {'scale_start': 0.9999, 'scale_end': 0.001, 'width': 3},
+        {'scale_start': 0.001, 'scale_end': 0.0001, 'width': 2}
+    ]
+    config.diff = Namespace(
+        num_timesteps=args.num_timesteps, time_dim=args.time_dim,
+        categorical_space='discrete',
+        diff_pos=Namespace(beta_schedule=args.pos_beta_schedule, scale_start=args.pos_scale_start,
+                           scale_end=args.pos_scale_end, width=args.pos_width),
+        diff_atom=Namespace(beta_schedule=args.atom_beta_schedule, init_prob=args.atom_init_prob,
+                            scale_start=args.atom_scale_start, scale_end=args.atom_scale_end, width=args.atom_width),
+        diff_bond=Namespace(beta_schedule=args.bond_beta_schedule, init_prob=args.bond_init_prob,
+                            time_segment=args.bond_time_segment, segment_diff=segment_diff_for_bond)
+    )
+
+    # --- 2. 模型实例化与加载 (替换 EDiT) ---
+    num_atom_types = len(args.atomic_numbers)
+    num_edge_types = len(args.mol_bond_types) + 1  # +1 for no-bond type
+
+    model = MolDiff(
+        config,
+        num_node_types=num_atom_types,
+        num_edge_types=num_edge_types
+    ).to(args.device)
     # 1. 先加载整个 checkpoint 文件
     checkpoint = torch.load(args.model_ckpt, map_location=args.device, weights_only=False)
     
