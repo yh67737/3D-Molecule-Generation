@@ -106,7 +106,9 @@ class EquivariantPosUpdate(nn.Module):
         # 计算力向量 (force_edge)
         # relative_vec = pos[edge_src] - pos[edge_dst]
         # distance = torch.norm(relative_vec, dim=-1, keepdim=True).clamp(min=1e-8)
-        force_edge = scalar_weight * (relative_vec / distance) / (distance + 1.0)
+        # 将 distance 临时扩展为 [num_edges, 1] 以进行正确的广播
+        distance_2d = distance.unsqueeze(-1)
+        force_edge = scalar_weight * (relative_vec / distance_2d) / (distance_2d + 1.0)
 
         # 聚合力到节点上
         delta_pos = scatter_sum(force_edge, edge_src, dim=0, dim_size=h_node.shape[0])

@@ -109,7 +109,7 @@ class E_DiT_Block(torch.nn.Module):
         
         # 边更新网络
         self.edge_updater = EdgeUpdateNetwork(
-            irreps_node=self.irreps_node_input,
+            irreps_node=self.irreps_node_output,
             irreps_edge=self.irreps_edge_input,
             irreps_sh=self.irreps_sh,
             hidden_dim=edge_update_hidden_dim,
@@ -124,6 +124,13 @@ class E_DiT_Block(torch.nn.Module):
             irreps_mlp_mid=self.irreps_mlp_mid,
             proj_drop=proj_drop
         )
+
+        self.edge_ffn_shortcut = None
+        if self.irreps_edge_input != self.irreps_edge_output:
+            self.edge_ffn_shortcut = FullyConnectedTensorProductRescale(
+                self.irreps_edge_input, self.irreps_edge_attr_type, 
+                self.irreps_edge_output, 
+                bias=True, rescale=_RESCALE)
 
         # 实例化坐标更新模块
         self.pos_updater = EquivariantPosUpdate(
@@ -161,7 +168,7 @@ class E_DiT_Block(torch.nn.Module):
         # 利用更新后的坐标信息-->更新的edge_attr和edge_scalars
         # 使用当前轮次的pos计算相对向量和距离
         relative_vec = pos[edge_src] - pos[edge_dst]
-        distance = torch.norm(relative_vec, dim=-1, keepdim=True).clamp(min=1e-8)
+        distance = torch.norm(relative_vec, dim=-1, keepdim=False).clamp(min=1e-8)
         # 重新计算球谐函数特征 (edge_attr)
         edge_attr = o3.spherical_harmonics(
             l=self.irreps_edge_attr, 
@@ -244,6 +251,9 @@ class E_DiT_Block(torch.nn.Module):
         ffn_output = self.edge_ffn(norm_edge_features, edge_attr_type)
 
         ffn_output = ffn_output * self.edge_ffn_gate
+
+        if self.edge_ffn_shortcut is not None:
+            edge_output = self.edge_ffn_shortcut(edge_output, edge_attr_type)
 
         if self.drop_path is not None:
             ffn_output = self.drop_path(ffn_output, edge_batch)

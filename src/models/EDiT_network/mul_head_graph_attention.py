@@ -9,6 +9,7 @@ from .layer_norm import AdaEquiLayerNorm
 from .fast_activation import Activation, Gate
 from .drop import EquivariantDropout
 from .tensor_product_rescale import FullyConnectedTensorProductRescaleSwishGate, LinearRS, FullyConnectedTensorProductRescale, TensorProductRescale, irreps2gate, sort_irreps_even_first
+from .radial_func import RadialProfile
 _RESCALE = True
 
 
@@ -159,9 +160,14 @@ class SeparableFCTP(torch.nn.Module):
         norm = get_norm_layer(norm_layer)
         
         self.dtp = DepthwiseTensorProduct(self.irreps_node_input, self.irreps_edge_attr, 
-            self.irreps_node_output, bias=False, internal_weights=True)
+            self.irreps_node_output, bias=False, internal_weights=internal_weights)
         
         self.dtp_rad = None
+        if fc_neurons is not None:
+            self.dtp_rad = RadialProfile(fc_neurons + [self.dtp.tp.weight_numel])
+            for (slice, slice_sqrt_k) in self.dtp.slices_sqrt_k.values():
+                self.dtp_rad.net[-1].weight.data[slice, :] *= slice_sqrt_k
+                self.dtp_rad.offset.data[slice] *= slice_sqrt_k
                 
         irreps_lin_output = self.irreps_node_output
         irreps_scalars, irreps_gates, irreps_gated = irreps2gate(self.irreps_node_output)

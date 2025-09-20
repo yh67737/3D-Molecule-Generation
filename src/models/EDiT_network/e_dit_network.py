@@ -52,7 +52,7 @@ class MultiTaskHead(nn.Module):
         """
 
         # 坐标预测：直接使用去噪网络输出的最终坐标作为预测结果
-        pred_pos = r_t_final
+        pred_pos = r_t_final[target_node_mask]
 
         # 原子类型预测
         # 使用掩码提取目标节点特征
@@ -65,9 +65,9 @@ class MultiTaskHead(nn.Module):
         pred_bond_type = self.edge_scalar_proj(target_edge_features)
 
         return {
-            "pred_atom_type": pred_atom_type,  # shape: [1, num_atom_types]
-            "pred_bond_type": pred_bond_type,  # shape: [num_target_edges, num_bond_types]
-            "pred_pos": pred_pos               # shape: [num_all_nodes, 3]
+            "atom_type_logits": pred_atom_type,  # shape: [1, num_atom_types]
+            "bond_logits": pred_bond_type,  # shape: [num_target_edges, num_bond_types]
+            "predicted_r0": pred_pos               # shape: [num_all_nodes, 3]
         }
 
 
