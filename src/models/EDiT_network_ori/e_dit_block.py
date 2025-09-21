@@ -2,16 +2,16 @@ import torch
 
 from e3nn import o3
 from e3nn.util.jit import compile_mode
-from .input_embedding import GaussianRadialBasisLayer
+import torch.nn as nn
 from .mul_head_graph_attention import get_norm_layer, GraphAttention,FeedForwardNetwork
 from .tensor_product_rescale import FullyConnectedTensorProductRescale
 from .drop import GraphDropPath
 from .edge_update import EdgeUpdateNetwork
-from .pos_update import EquivariantPosUpdate
+from src.training.train_B import check_tensors
 
 _RESCALE = True
 
-@compile_mode('script')
+# @compile_mode('script')
 class E_DiT_Block(torch.nn.Module):
     '''
         一个同时更新节点和边特征的等变Transformer块 (Equivariant Denoising Transformer Block)。
@@ -24,8 +24,6 @@ class E_DiT_Block(torch.nn.Module):
     '''
     
     def __init__(self,
-        max_radius,
-        number_of_basis,
         # 节点和边的Irreps定义
         irreps_node_input, irreps_node_attr, # irreps_node_attr是原子类型，Equiformer中是整数表示，而我们用one-hot注意适应
         irreps_edge_attr, irreps_node_output, # irreps_edge_attr 是Equifomer中原始的用来更新节点特征过程的边特征，注意与我们后来添加的被更新的边特征区分
@@ -44,11 +42,6 @@ class E_DiT_Block(torch.nn.Module):
         
         super().__init__()
 
-        # 利用更新后的坐标信息
-        self.max_radius = max_radius
-        self.rbf = GaussianRadialBasisLayer(number_of_basis, cutoff=self.max_radius)
-        self.irreps_sh = o3.Irreps(irreps_edge_attr)
-        
         ## 为节点更新路径实例化所有模块
         self.irreps_node_input = o3.Irreps(irreps_node_input)
         self.irreps_node_attr = o3.Irreps(irreps_node_attr)
@@ -109,11 +102,10 @@ class E_DiT_Block(torch.nn.Module):
         
         # 边更新网络
         self.edge_updater = EdgeUpdateNetwork(
-            irreps_node=self.irreps_node_output,
+            irreps_node=self.irreps_node_input,
             irreps_edge=self.irreps_edge_input,
-            irreps_sh=self.irreps_sh,
             hidden_dim=edge_update_hidden_dim,
-            num_rbf = number_of_basis
+            time_embedding_dim=time_embedding_dim
         )
 
         # 边的前馈网络 (与节点的FFN是独立的实例，拥有不同权重)
@@ -125,20 +117,6 @@ class E_DiT_Block(torch.nn.Module):
             proj_drop=proj_drop
         )
 
-        self.edge_ffn_shortcut = None
-        if self.irreps_edge_input != self.irreps_edge_output:
-            self.edge_ffn_shortcut = FullyConnectedTensorProductRescale(
-                self.irreps_edge_input, self.irreps_edge_attr_type, 
-                self.irreps_edge_output, 
-                bias=True, rescale=_RESCALE)
-
-        # 实例化坐标更新模块
-        self.pos_updater = EquivariantPosUpdate(
-            irreps_node_in=self.irreps_node_output, 
-            irreps_edge_in=self.irreps_edge_output, 
-            time_embedding_dim=time_embedding_dim
-        )
-
         # 共享路径失活模块：该模块模块无参数、无状态，创建一次和两个效果一样
         self.drop_path = GraphDropPath(drop_path_rate) if drop_path_rate > 0. else None
         self.edge_updater_gate = torch.nn.Parameter(torch.tensor([1e-3]))
@@ -147,8 +125,8 @@ class E_DiT_Block(torch.nn.Module):
         self.node_ga_gate = torch.nn.Parameter(torch.tensor([1e-3]))
         self.node_ffn_gate = torch.nn.Parameter(torch.tensor([1e-3]))
 
-    def forward(self, node_input, node_attr, edge_src, edge_dst,
-                edge_input, edge_attr_type, pos, edge_index, t, batch, **kwargs):
+    def forward(self, node_input, node_attr, edge_src, edge_dst, edge_attr, edge_scalars,
+                edge_input, edge_attr_type, edge_index, t, batch, **kwargs):
         """
         执行一个E_DiT_Block的前向传播。
 
@@ -165,20 +143,6 @@ class E_DiT_Block(torch.nn.Module):
         Returns:
             (torch.Tensor, torch.Tensor): 更新后的节点特征和边特征。
         """
-        # 利用更新后的坐标信息-->更新的edge_attr和edge_scalars
-        # 使用当前轮次的pos计算相对向量和距离
-        relative_vec = pos[edge_src] - pos[edge_dst]
-        distance = torch.norm(relative_vec, dim=-1, keepdim=False).clamp(min=1e-8)
-        # 重新计算球谐函数特征 (edge_attr)
-        edge_attr = o3.spherical_harmonics(
-            l=self.irreps_edge_attr, 
-            x=relative_vec,
-            normalize=True,
-            normalization='component'
-        )
-        # 重新计算径向基特征 (edge_scalars)
-        edge_scalars = self.rbf(distance)
-
         ## 节点更新路径 (Node Update Path) 
         node_output = node_input
         node_features = node_input
@@ -224,17 +188,18 @@ class E_DiT_Block(torch.nn.Module):
         # 获取每条边所属的图的索引
         edge_batch = batch[edge_src]
 
-        # 第一个残差分支(Edge Update)
+        # --- 第一个残差分支 (Edge Update) ---
         # Pre-Normalization
         norm_edge_features = self.edge_norm_1(edge_features, t, edge_batch)
+        # print('before updater:',norm_edge_features)
 
         # 使用完全更新后的节点特征node_output作为上下文信息
         edge_update_amount = self.edge_updater(
             h=node_output,
             e_in=norm_edge_features,
-            edge_scalars = edge_scalars,
-            edge_attr = edge_attr,
-            edge_index=edge_index
+            edge_index=edge_index,
+            t=t,
+            edge_batch=edge_batch
         )
         edge_update_amount = edge_update_amount * self.edge_updater_gate
 
@@ -242,38 +207,21 @@ class E_DiT_Block(torch.nn.Module):
             edge_update_amount = self.drop_path(edge_update_amount, edge_batch)
         # 第一次残差连接
         edge_output = edge_output + edge_update_amount
+        # print(f"after updater:",edge_output)
 
-        # 第二个残差分支(FFN)
+        # --- 第二个残差分支 (FFN) ---
         edge_features = edge_output
         # Pre-Normalization
         norm_edge_features = self.edge_norm_2(edge_features, t, edge_batch)
-
+        # Feed-Forward Network
+        # print(f"before ffn:", norm_edge_features)
         ffn_output = self.edge_ffn(norm_edge_features, edge_attr_type)
 
         ffn_output = ffn_output * self.edge_ffn_gate
-
-        if self.edge_ffn_shortcut is not None:
-            edge_output = self.edge_ffn_shortcut(edge_output, edge_attr_type)
 
         if self.drop_path is not None:
             ffn_output = self.drop_path(ffn_output, edge_batch)
         # 第二次残差连接
         edge_output = edge_output + ffn_output
-
-        # 坐标更新路径 (Position Update Path)
-        # 调用坐标更新模块
-        delta_pos = self.pos_updater(
-            h_node=node_output,         
-            h_edge=edge_output,        
-            pos=pos,                    
-            edge_index=edge_index,
-            relative_vec=relative_vec,
-            distance=distance,
-            t=t,
-            batch=batch
-        )
-
-        # 得到更新后的坐标
-        pos_output = pos + delta_pos
-        
-        return node_output, edge_output, pos_output
+        # print(f"after ffn:", edge_output)
+        return node_output, edge_output

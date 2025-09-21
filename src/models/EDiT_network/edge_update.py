@@ -3,19 +3,9 @@ import torch.nn as nn
 from e3nn import o3
 from e3nn.o3 import Irreps
 from torch_scatter import scatter
-import e3nn
-from e3nn.o3 import Linear
 import torch.nn.functional as F
-from e3nn.nn import NormActivation
 from src.models.EDiT_network.layer_norm import AdaEquiLayerNorm
 from src.models.EDiT_network.tensor_product_rescale import LinearRS
-import math
-import sys
-import e3nn
-import os
-
-
-# 位于 edge_update.py 文件顶部
 
 class StableNormActivation(nn.Module):
     """
@@ -73,215 +63,156 @@ class StableNormActivation(nn.Module):
         else:
             return torch.cat(output_parts, dim=-1)
 
-class SinusoidalTimeEmbedding(nn.Module):
-    """标准的正弦时间嵌入"""
-    def __init__(self, dim):
-        super().__init__()
-        self.dim = dim
-
-    def forward(self, t):
-        device = t.device
-        half_dim = self.dim // 2
-        embeddings = math.log(10000) / (half_dim - 1)
-        embeddings = torch.exp(torch.arange(half_dim, device=device) * -embeddings)
-        embeddings = t[:, None] * embeddings[None, :]
-        embeddings = torch.cat((embeddings.sin(), embeddings.cos()), dim=-1)
-        return embeddings
-
-
-class InterModule(nn.Module):
-    def __init__(self, irreps_in, irreps_mid, irreps_out):
-        super().__init__()
-        self.linear1 = Linear(irreps_in, irreps_mid)
-        self.norm_act = NormActivation(irreps_mid, F.silu)
-        self.linear2 = Linear(irreps_mid, irreps_out)
-
-    def forward(self, x):
-        # 经过第一个线性层
-        x = self.linear1(x)
-
-        # --- 核心修复 ---
-        # 在进入计算敏感的 NormActivation 之前，强制转换为 float32
-        original_dtype = x.dtype
-        x = self.norm_act(x.to(torch.float32))
-        # 计算完毕后，转换回原来的数据类型
-        x = x.to(original_dtype)
-        # --- 结束修复 ---
-
-        # 经过第二个线性层
-        x = self.linear2(x)
-        return x
-
-
 class EquivariantBondFFN(nn.Module):
     """
-    BondFFN的等变实现。
+    BondFFN的等变实现.
     """
 
-    def __init__(self, irreps_bond: Irreps, irreps_node: Irreps, irreps_time: Irreps, irreps_message: Irreps,
-                 irreps_inter: Irreps = None):
+    def __init__(self, irreps_bond: Irreps, irreps_node: Irreps, irreps_sh: Irreps,
+                 irreps_message: Irreps, irreps_inter: Irreps = None):
         """
         Args:
-            irreps_bond (Irreps): 边特征的 Irreps。
-            irreps_node (Irreps): 节点特征的 Irreps。
-            irreps_time (Irreps): 时间特征的 Irreps。
-            irreps_message (Irreps): 最终输出消息的 Irreps。
-            irreps_inter (Irreps, optional): 中间交互特征的 Irreps。如果为 None，则默认为 irreps_message。
+            irreps_bond (Irreps): 边特征的Irreps.
+            irreps_node (Irreps): 节点特征的Irreps.
+            irreps_sh (Irreps): 球谐特征的Irreps.
+            irreps_message (Irreps): 最终输出消息的Irreps.
+            irreps_inter (Irreps, optional): 中间交互特征的Irreps. 如果为 None，则默认为 irreps_message.
         """
         super().__init__()
         self.irreps_bond = irreps_bond
         self.irreps_node = irreps_node
-        self.irreps_time = irreps_time
+        self.irreps_sh = irreps_sh
         self.irreps_message = irreps_message
-
         if irreps_inter is None:
             irreps_inter = irreps_message
 
-        # 1. 分别投射 (对应 bond_linear, node_linear)
+        # 初始节点和边特征映射
         self.bond_linear = LinearRS(self.irreps_bond, irreps_inter)
         self.node_linear = LinearRS(self.irreps_node, irreps_inter)
 
-        self.tensor_product = o3.FullTensorProduct(irreps_inter, irreps_inter)
+        # 融合投影后的节点和边
+        self.tensor_product_1 = o3.FullTensorProduct(irreps_inter, irreps_inter) 
+        irreps_tp_out_1 = self.tensor_product_1.irreps_out
+        self.tensor_product_2 = o3.FullTensorProduct(irreps_tp_out_1, self.irreps_sh) 
 
-        # 2. 从创建好的层中提取其输出 Irreps，用于定义下一层
-        irreps_tp_out = self.tensor_product.irreps_out
-
-        # The rest of your code remains the same
+        # 从创建好的层中提取其输出Irreps维度，用于定义下一层
+        irreps_tp_out = self.tensor_product_2.irreps_out 
         self.inter_module = nn.Sequential(
-            Linear(irreps_tp_out, self.irreps_message),
+            LinearRS(irreps_tp_out, self.irreps_message),
             StableNormActivation(self.irreps_message, F.silu),
-            Linear(self.irreps_message, self.irreps_message)
+            LinearRS(self.irreps_message, self.irreps_message)
         )
 
-        ### 门控路径 ###
-        # 4. 独立的门控 MLP (对应 gate)
-        #    它的输入是原始特征，输出必须是一个标量，用于门控
-        gate_mlp_irreps_in = (self.irreps_bond + self.irreps_node + self.irreps_time).simplify()
-
-        # 定义一个隐藏层 Irreps，让门控 MLP 更有表达力
-        irreps_gate_hidden = o3.Irreps(gate_mlp_irreps_in)
-
-        irreps_gate_hidden.sort()
-        irreps_gate_hidden = irreps_gate_hidden.simplify()
+        #门控路径
+        gate_mlp_irreps_in = (self.irreps_bond + self.irreps_node + self.irreps_sh).simplify()
+        irreps_gate_hidden = gate_mlp_irreps_in
 
         self.gate_mlp = nn.Sequential(
-            Linear(gate_mlp_irreps_in, irreps_gate_hidden),
+            LinearRS(gate_mlp_irreps_in, irreps_gate_hidden),
             StableNormActivation(irreps_gate_hidden, F.silu),
-            Linear(irreps_gate_hidden, o3.Irreps("1x0e"))
-        )
+            LinearRS(irreps_gate_hidden, o3.Irreps("1x0e")))
 
-    def forward(self, bond_feat_input, node_feat_input, time):
-        # 1. 投射
+    def forward(self, bond_feat_input, node_feat_input, sh_feat):
         bond_feat_proj = self.bond_linear(bond_feat_input)
         node_feat_proj = self.node_linear(node_feat_input)
-
-        # 2. 交互
-        inter_feat = self.tensor_product(bond_feat_proj, node_feat_proj)
-
-        # 3. MLP 处理
-        inter_feat = self.inter_module(inter_feat)
-
-        # 4a. 准备门控输入
-        gate_input = torch.cat([bond_feat_input, node_feat_input, time], dim=-1)
-        # 4b. 计算标量门控值
+        inter_feat_1 = self.tensor_product_1(bond_feat_proj, node_feat_proj)
+        inter_feat_2 = self.tensor_product_2(inter_feat_1, sh_feat)
+        inter_feat = self.inter_module(inter_feat_2)
+        # 门控输入
+        gate_input = torch.cat([bond_feat_input, node_feat_input, sh_feat], dim=-1)
         gate_scalar = self.gate_mlp(gate_input)
-        # 4c. 应用 sigmoid 激活
         gate_activation = torch.sigmoid(gate_scalar)
 
-        # 将标量门控信号乘到主路径的输出上
         return inter_feat * gate_activation
 
-
 class EdgeUpdateNetwork(nn.Module):
-    """
-    一个与 E_DiT_Block 兼容的、严格遵循原始流程的边更新网络。
-    """
-
-    def __init__(self, irreps_node: str, irreps_edge: str, hidden_dim: int, time_embedding_dim: int):
+    def __init__(self, irreps_node: str, irreps_edge: str, irreps_sh: str,
+                hidden_dim: int, num_rbf: int):
         """
         Args:
-            irreps_node (str): 节点特征的 Irreps。
-            irreps_edge (str): 边特征的 Irreps。
-            hidden_dim (int): 用于定义内部隐藏层 Irreps 的维度。
-            time_embedding_dim (int): 时间嵌入的维度，用于推断时间 Irreps。
+            irreps_node (str): 节点特征的Irreps.
+            irreps_edge (str): 边特征的Irreps.
+            irreps_sh (str): 方向特征的Irreps.
+            hidden_dim (int): 定义标量融合隐藏层维度.
+            num_rbf(int): 节点距离编码维度
         """
         super().__init__()
 
         self.irreps_edge = o3.Irreps(irreps_edge)
         self.irreps_node = o3.Irreps(irreps_node)
-
-        self.time_embed = SinusoidalTimeEmbedding(time_embedding_dim)
-
-        self.irreps_time = o3.Irreps(f'{time_embedding_dim}x0e')
-
+        self.irreps_sh = o3.Irreps(irreps_sh)
+    
         scaling_factor = 2
         irreps_inter_list = [(mul // scaling_factor, ir) for mul, ir in self.irreps_edge]
         irreps_inter = o3.Irreps(irreps_inter_list).simplify()
 
+        # 提取边特征的标量部分
+        self.scalar_edge_irreps = o3.Irreps([(mul, ir) for mul, ir in self.irreps_edge if ir.l == 0])
+        self.scalar_edge_dim = self.scalar_edge_irreps.dim
+
+        # 定义标量融合MLP
+        scalar_fusion_in_dim = self.scalar_edge_dim + num_rbf
+        self.scalar_fusion_mlp = nn.Sequential(
+            nn.Linear(scalar_fusion_in_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, self.scalar_edge_dim) 
+        )
+
         self.bond_ffn_left = EquivariantBondFFN(
-            self.irreps_edge, self.irreps_node, self.irreps_time, self.irreps_edge, irreps_inter=irreps_inter
-        )
+            self.irreps_edge, self.irreps_node, self.irreps_sh, self.irreps_edge, irreps_inter=irreps_inter)
         self.bond_ffn_right = EquivariantBondFFN(
-            self.irreps_edge, self.irreps_node, self.irreps_time, self.irreps_edge, irreps_inter=irreps_inter
-        )
+            self.irreps_edge, self.irreps_node, self.irreps_sh, self.irreps_edge, irreps_inter=irreps_inter)
 
-        self.node_ffn_left = Linear(self.irreps_node, self.irreps_edge)
-        self.node_ffn_right = Linear(self.irreps_node, self.irreps_edge)
-        self.self_ffn = Linear(self.irreps_edge, self.irreps_edge)
-        self.final_norm_and_transform = AdaEquiLayerNorm(
-            irreps=self.irreps_edge,
-            time_embedding_dim=time_embedding_dim
-        )
-
-    def forward(self, h: torch.Tensor, e_in: torch.Tensor, edge_index: torch.Tensor, t: torch.Tensor,
-                edge_batch: torch.Tensor) -> torch.Tensor:
-
+        self.node_ffn_left = LinearRS(self.irreps_node, self.irreps_edge)
+        self.node_ffn_right = LinearRS(self.irreps_node, self.irreps_edge)
+        self.self_ffn = LinearRS(self.irreps_edge, self.irreps_edge)
+    
+    def forward(self, h: torch.Tensor, e_in: torch.Tensor, edge_scalars: torch.Tensor, 
+                edge_attr: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            h (torch.Tensor): 节点特征 (来自 E_DiT_Block 的 node_output)。
-            e_in (torch.Tensor): 边特征 (来自 E_DiT_Block 的 norm_edge_features)。
-            edge_index (torch.Tensor): 边索引。
-            t (torch.Tensor): 时间嵌入特征。
+            h (torch.Tensor): 节点特征
+            e_in (torch.Tensor): 边特征
+            edge_scalars：几何距离信息
+            edge_attr：几何方向信息
+            edge_index (torch.Tensor): 边索引
 
         Returns:
-            torch.Tensor: 计算出的边特征更新量或新特征。
+            torch.Tensor: 更新的边特征
         """
-        # 1. 将 E_DiT_Block 的参数名映射到我们内部使用的变量名
-        bond_time = self.time_embed(t)
+        # 准备输入特征
         h_node = h
-        h_bond = e_in
-        bond_index = edge_index
+        left_node, right_node = edge_index
+        num_nodes = h_node.size(0)
 
-        # 2. 内部计算逻辑保持不变
-        N = h_node.size(0)
-        left_node, right_node = bond_index
-        bond_time = self.time_embed(t)[edge_batch]
+        # 标量融合
+        e_in_scalars = e_in.narrow(1, 0, self.scalar_edge_dim)
+        e_in_high_order = e_in.narrow(1, self.scalar_edge_dim, e_in.shape[1] - self.scalar_edge_dim)
+        combined_scalars = torch.cat([e_in_scalars, edge_scalars], dim=-1)
+        fused_scalars = self.scalar_fusion_mlp(combined_scalars)
+        h_bond = torch.cat([fused_scalars, e_in_high_order], dim=-1)
 
-        msg_bond_left = self.bond_ffn_left(h_bond, h_node[left_node], bond_time)
-        aggregated_at_right = scatter(msg_bond_left.clone(), right_node, dim=0, dim_size=N, reduce="add")
-        final_msg_left = aggregated_at_right[left_node]
+        # 计算五种类型的消息
+        # a) 来自邻近边的消息：所有以i为端点的其他边e(k, i)传来的消息
+        msg_from_neighbors_at_left = self.bond_ffn_left(h_bond, h_node[left_node], edge_attr)
+        agg_at_nodes_from_left = scatter(msg_from_neighbors_at_left, right_node, dim=0, dim_size=num_nodes, reduce="add")
+        final_msg_left = agg_at_nodes_from_left[left_node]
+        
+        # 所有以j为端点的其他边e(k, j)传来的消息
+        msg_from_neighbors_at_right = self.bond_ffn_right(h_bond, h_node[right_node], edge_attr)
+        agg_at_nodes_from_right = scatter(msg_from_neighbors_at_right, left_node, dim=0, dim_size=num_nodes, reduce="add")
+        final_msg_right = agg_at_nodes_from_right[right_node]
 
-        msg_bond_right = self.bond_ffn_right(h_bond, h_node[right_node], bond_time)
-        aggregated_at_left = scatter(msg_bond_right.clone(), left_node, dim=0, dim_size=N, reduce="add")
-        final_msg_right = aggregated_at_left[right_node]
-
+        # 来自两端节点的消息
         msg_node_left = self.node_ffn_left(h_node[left_node])
         msg_node_right = self.node_ffn_right(h_node[right_node])
+        
+        # 来自边自身的更新
         msg_self = self.self_ffn(h_bond)
 
-        h_bond_sum = msg_node_left + msg_node_right + msg_self 
-
-        #h_bond_sum = (final_msg_left + final_msg_right + msg_node_left + msg_node_right + msg_self)
-        update_amount = self.final_norm_and_transform(
-            node_input=h_bond_sum,
-            t=t,
-            batch=edge_batch
-        )  # 直接将聚合后的所有消息作为更新量
-
-        # (可选) 如果想包含后处理，可以这样做，但这会改变原始 EdgeBlock 的流程
-        # h_bond_out = self.layer_norm(h_bond_sum)
-        # h_bond_out = self.act(h_bond_out)
-        # h_bond_out = self.out_transform(h_bond_out)
-        # update_amount = h_bond_out
-
-        return update_amount
+        # 聚合所有消息
+        h_bond_aggregated = (final_msg_left + final_msg_right + 
+                             msg_node_left + msg_node_right + 
+                             msg_self)
+        
+        return h_bond_aggregated
