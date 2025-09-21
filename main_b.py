@@ -133,10 +133,10 @@ def get_args_parser():
                         help='Directory containing some JSON fragment files.')  ###
     # parser.add_argument('--fragment_data_dir', type=str, default='./prepared_data/gdb9_bfs_fragments_json', help='Directory containing the JSON fragment files.')
     parser.add_argument('--val_split_percentage', type=float, default=0.1, help='Percentage of data to use for validation.')
-    parser.add_argument('--train_batch_size', type=int, default=2)
-    parser.add_argument('--val_batch_size', type=int, default=2)
-    parser.add_argument('--batch_ratio_val', type=int, default=10, help='Ratio to determine number of validation samples (num_val_samples = batch_size * batch_ratio)')
-    parser.add_argument('--batch_ratio_train', type=int, default=10, help='Ratio to determine number of training samples per epoch (num_train_samples = batch_size * batch_ratio)')
+    parser.add_argument('--train_batch_size', type=int, default=64)
+    parser.add_argument('--val_batch_size', type=int, default=64)
+    parser.add_argument('--batch_ratio_val', type=int, default=14, help='Ratio to determine number of validation samples (num_val_samples = batch_size * batch_ratio)')
+    parser.add_argument('--batch_ratio_train', type=int, default=140, help='Ratio to determine number of training samples per epoch (num_train_samples = batch_size * batch_ratio)')
     parser.add_argument('--num_workers', type=int, default=4)
     parser.add_argument('--accumulation_steps', type=int, default=1)
 
