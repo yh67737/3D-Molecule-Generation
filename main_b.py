@@ -129,7 +129,7 @@ def get_args_parser():
     # --- 数据集参数 ---
     parser.add_argument('--data_split_path', type=str, default='./data_splits',
                         help='Directory to save/load data split indices.')
-    parser.add_argument('--fragment_data_dir', type=str, default='./prepared_data/32for_test',
+    parser.add_argument('--fragment_data_dir', type=str, default='./prepared_data/gdb9_unique_subgraphs_json',
                         help='Directory containing some JSON fragment files.')  ###
     # parser.add_argument('--fragment_data_dir', type=str, default='./prepared_data/gdb9_bfs_fragments_json', help='Directory containing the JSON fragment files.')
     parser.add_argument('--val_split_percentage', type=float, default=0.1, help='Percentage of data to use for validation.')
@@ -176,7 +176,7 @@ def get_args_parser():
     g_embed.add_argument('--rbf_cutoff', type=float, default=5.0, help='Cutoff radius for RBF.')
     g_embed.add_argument('--fc_neurons', type=int, nargs='+', default=[64, 64],
                          help='List of hidden layer sizes for FC network in attention.')
-    g_embed.add_argument('--avg_degree', type=float, default=9.21, help='Average degree of nodes in the dataset.')
+    g_embed.add_argument('--avg_degree', type=float, default=9.28, help='Average degree of nodes in the dataset.')
 
     # --- 注意力机制参数 (Attention Mechanism) ---
     g_attn = parser.add_argument_group('Attention')
