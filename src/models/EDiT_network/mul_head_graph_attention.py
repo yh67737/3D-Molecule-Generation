@@ -138,7 +138,7 @@ class SeparableFCTP(torch.nn.Module):
         2. 逐点线性层 (Pointwise Part): 进行通道维度的混合。
     '''
     def __init__(self, irreps_node_input, irreps_edge_attr, irreps_node_output, 
-        fc_neurons, use_activation=False, norm_layer='graph', 
+        fc_neurons, use_activation=False, norm_layer='layer', 
         internal_weights=False):
         """
         初始化函数。
