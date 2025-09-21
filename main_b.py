@@ -179,7 +179,7 @@ def get_args_parser():
     g_embed.add_argument('--rbf_cutoff', type=float, default=1000.0, help='Cutoff radius for RBF.')
     g_embed.add_argument('--fc_neurons', type=int, nargs='+', default=[64, 64],
                          help='List of hidden layer sizes for FC network in attention.')
-    g_embed.add_argument('--avg_degree', type=float, default=9.21, help='Average degree of nodes in the dataset.')
+    g_embed.add_argument('--avg_degree', type=float, default=9.28, help='Average degree of nodes in the dataset.')
     g_embed.add_argument('--max_seq_len', type=int, default=500, help='Introducing position encoding, define the max number of a molecule.')
 
     # --- 注意力机制参数 (Attention Mechanism) ---
