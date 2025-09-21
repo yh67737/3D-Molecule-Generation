@@ -978,9 +978,9 @@ def train(
                 # 'lossI_a': lossI_a.item(), # 原子类型损失 Ⅰ
                 # 'lossI_r': lossI_r.item(), # 坐标损失 Ⅰ
                 # 'lossI_b': lossI_b.item(), # 边类型损失 Ⅰ
-                # 'lossII_a': lossII_a.item(), # 原子类型损失 Ⅱ
-                # 'lossII_r': lossII_r.item(), # 坐标损失 Ⅱ
-                # 'lossII_b': lossII_b.item(),  # 边类型损失 Ⅱ
+                'lossII_a': lossII_a.item(), # 原子类型损失 Ⅱ
+                'lossII_r': lossII_r.item(), # 坐标损失 Ⅱ
+                'lossII_b': lossII_b.item(),  # 边类型损失 Ⅱ
                 # 'p_noise_I_norm': norm_predicted_noise_I.item(),
                 'grad_norm': grad_norm_to_display, # 显示当前的梯度范数
                 # ==================== 新增的监控项 ====================
