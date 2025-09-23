@@ -133,12 +133,12 @@ def get_args_parser():
                         help='Directory containing some JSON fragment files.')  ###
     # parser.add_argument('--fragment_data_dir', type=str, default='./prepared_data/gdb9_bfs_fragments_json', help='Directory containing the JSON fragment files.')
     parser.add_argument('--val_split_percentage', type=float, default=0.1, help='Percentage of data to use for validation.')
-    parser.add_argument('--train_batch_size', type=int, default=32)
-    parser.add_argument('--val_batch_size', type=int, default=32)
-    parser.add_argument('--batch_ratio_val', type=int, default=10, help='Ratio to determine number of validation samples (num_val_samples = batch_size * batch_ratio)')
-    parser.add_argument('--batch_ratio_train', type=int, default=10, help='Ratio to determine number of training samples per epoch (num_train_samples = batch_size * batch_ratio)')
+    parser.add_argument('--train_batch_size', type=int, default=16)
+    parser.add_argument('--val_batch_size', type=int, default=16)
+    parser.add_argument('--batch_ratio_val', type=int, default=50, help='Ratio to determine number of validation samples (num_val_samples = batch_size * batch_ratio)')
+    parser.add_argument('--batch_ratio_train', type=int, default=500, help='Ratio to determine number of training samples per epoch (num_train_samples = batch_size * batch_ratio)')
     parser.add_argument('--num_workers', type=int, default=4)
-    parser.add_argument('--accumulation_steps', type=int, default=1)
+    parser.add_argument('--accumulation_steps', type=int, default=8)
 
     # E-DiT参数
     # --- 模型架构参数 (Model Architecture) ---
@@ -150,9 +150,9 @@ def get_args_parser():
 
     # --- Irreps 参数 (Irreps Definitions) ---
     g_irreps = parser.add_argument_group('Irreps')
-    g_irreps.add_argument('--irreps_node_hidden', type=str, default='48x0e+24x1o+12x2e',
+    g_irreps.add_argument('--irreps_node_hidden', type=str, default='32x0e+16x1o+8x2e',
                           help='Hidden node feature irreps.')
-    g_irreps.add_argument('--irreps_edge', type=str, default='48x0e+24x1o+12x2e', help='Hidden edge feature irreps.')
+    g_irreps.add_argument('--irreps_edge', type=str, default='32x0e+16x1o+8x2e', help='Hidden edge feature irreps.')
     g_irreps.add_argument('--irreps_final_node_feature', type=str, default='128x0e',
                           help='Hidden node feature irreps for final block output.')
     g_irreps.add_argument('--irreps_final_edge_feature', type=str, default='128x0e', help='Hidden edge feature irreps for final block output.')
@@ -160,8 +160,8 @@ def get_args_parser():
     g_irreps.add_argument('--irreps_edge_attr_type', type=str, default='5x0e',
                           help='Edge attribute (bond type) irreps.')
     g_irreps.add_argument('--irreps_sh', type=str, default='1x0e+1x1e+1x2e', help='Spherical harmonics irreps.')
-    g_irreps.add_argument('--irreps_head', type=str, default='24x0e+12x1o+6x2e', help='Single attention head irreps.')
-    g_irreps.add_argument('--irreps_mlp_mid', type=str, default='96x0e+48x1o+24x2e',
+    g_irreps.add_argument('--irreps_head', type=str, default='16x0e+8x1o+4x2e', help='Single attention head irreps.')
+    g_irreps.add_argument('--irreps_mlp_mid', type=str, default='64x0e+32x1o+16x2e',
                           help='Irreps for the middle layer of FFN.')
     g_irreps.add_argument('--irreps_pre_attn', type=str, default=None,
                           help='Optional irreps for pre-attention linear layer.')
@@ -179,7 +179,7 @@ def get_args_parser():
     g_embed.add_argument('--rbf_cutoff', type=float, default=1000.0, help='Cutoff radius for RBF.')
     g_embed.add_argument('--fc_neurons', type=int, nargs='+', default=[64, 64],
                          help='List of hidden layer sizes for FC network in attention.')
-    g_embed.add_argument('--avg_degree', type=float, default=9.21, help='Average degree of nodes in the dataset.')
+    g_embed.add_argument('--avg_degree', type=float, default=9.28, help='Average degree of nodes in the dataset.')
     g_embed.add_argument('--max_seq_len', type=int, default=500, help='Introducing position encoding, define the max number of a molecule.')
 
     # --- 注意力机制参数 (Attention Mechanism) ---
