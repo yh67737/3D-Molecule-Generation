@@ -123,16 +123,19 @@ class TensorProductRescale(torch.nn.Module):
                 
 
     def forward_tp_rescale_bias(self, x, y, weight=None):
-        
         out = self.tp(x, y, weight)
-        
-        #if self.rescale and self.tp.internal_weights:
-        #    for (slice, slice_sqrt_k) in self.slices_sqrt_k.values():
-        #        out[:, slice] /= slice_sqrt_k
+
         if self.use_bias:
+            out_with_bias = out.clone()
+
+            # 2. 在副本上进行加法操作
             for (_, slice, bias) in zip(self.bias_slice_idx, self.bias_slices, self.bias):
-                #out[:, slice] += bias
-                out.narrow(1, slice.start, slice.stop - slice.start).add_(bias)
+                out_with_bias[:, slice] += bias
+
+            # 3. 返回修改后的副本
+            return out_with_bias
+
+        # 如果不使用 bias，则直接返回原始输出
         return out
         
 

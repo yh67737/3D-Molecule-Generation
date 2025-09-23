@@ -5,7 +5,7 @@ from e3nn.o3 import Irreps
 from torch_scatter import scatter
 import torch.nn.functional as F
 from src.models.EDiT_network.layer_norm import AdaEquiLayerNorm
-from src.models.EDiT_network.tensor_product_rescale import LinearRS
+from src.models.EDiT_network.tensor_product_rescale import LinearRS, FullyConnectedTensorProductRescale
 
 class StableNormActivation(nn.Module):
     """
@@ -46,7 +46,7 @@ class StableNormActivation(nn.Module):
 
         # 2. 处理非标量部分 (l>0)
         for start, end, mul, dim in self.non_scalar_dims:
-            non_scalars = x[:, start:end].view(-1, mul, dim)
+            non_scalars = x[:, start:end].clone().view(-1, mul, dim)
             norm = torch.linalg.norm(non_scalars, dim=-1, keepdim=True)
             activated_norm = self.activation(norm)
             
@@ -62,6 +62,8 @@ class StableNormActivation(nn.Module):
             return torch.zeros_like(x)
         else:
             return torch.cat(output_parts, dim=-1)
+        
+
 
 class EquivariantBondFFN(nn.Module):
     """
@@ -90,15 +92,12 @@ class EquivariantBondFFN(nn.Module):
         self.bond_linear = LinearRS(self.irreps_bond, irreps_inter)
         self.node_linear = LinearRS(self.irreps_node, irreps_inter)
 
-        # 融合投影后的节点和边
-        self.tensor_product_1 = o3.FullTensorProduct(irreps_inter, irreps_inter) 
-        irreps_tp_out_1 = self.tensor_product_1.irreps_out
-        self.tensor_product_2 = o3.FullTensorProduct(irreps_tp_out_1, self.irreps_sh) 
+        irreps_concat_in = (irreps_inter + irreps_inter + self.irreps_sh).simplify()
 
-        # 从创建好的层中提取其输出Irreps维度，用于定义下一层
-        irreps_tp_out = self.tensor_product_2.irreps_out 
-        self.inter_module = nn.Sequential(
-            LinearRS(irreps_tp_out, self.irreps_message),
+        # 2. 定义一个融合网络，替代原来所有的 tensor_product 和 inter_module
+        #    它接收拼接后的特征，输出最终的消息维度
+        self.fusion_module = nn.Sequential(
+            LinearRS(irreps_concat_in, self.irreps_message),
             StableNormActivation(self.irreps_message, F.silu),
             LinearRS(self.irreps_message, self.irreps_message)
         )
@@ -112,18 +111,33 @@ class EquivariantBondFFN(nn.Module):
             StableNormActivation(irreps_gate_hidden, F.silu),
             LinearRS(irreps_gate_hidden, o3.Irreps("1x0e")))
 
+#     def forward(self, bond_feat_input, node_feat_input, sh_feat):
+#         bond_feat_proj = self.bond_linear(bond_feat_input)
+#         node_feat_proj = self.node_linear(node_feat_input)
+#         inter_feat_1 = self.tensor_product_1(bond_feat_proj, node_feat_proj)
+#         inter_feat_2 = self.tensor_product_2(inter_feat_1.clone(), sh_feat.clone())
+#         inter_feat = self.inter_module(inter_feat_2)
+#         inter_feat = inter_feat_2
+#         # 门控输入
+#         gate_input = torch.cat([bond_feat_input, node_feat_input, sh_feat], dim=-1)
+#         gate_scalar = self.gate_mlp(gate_input)
+#         gate_activation = torch.sigmoid(gate_scalar)
+
+#         return inter_feat * gate_activation
     def forward(self, bond_feat_input, node_feat_input, sh_feat):
         bond_feat_proj = self.bond_linear(bond_feat_input)
         node_feat_proj = self.node_linear(node_feat_input)
-        inter_feat_1 = self.tensor_product_1(bond_feat_proj, node_feat_proj)
-        inter_feat_2 = self.tensor_product_2(inter_feat_1, sh_feat)
-        inter_feat = self.inter_module(inter_feat_2)
+        combined_feat = torch.cat([bond_feat_proj, node_feat_proj, sh_feat], dim=-1)
+        inter_feat = self.fusion_module(combined_feat)
         # 门控输入
         gate_input = torch.cat([bond_feat_input, node_feat_input, sh_feat], dim=-1)
         gate_scalar = self.gate_mlp(gate_input)
         gate_activation = torch.sigmoid(gate_scalar)
 
         return inter_feat * gate_activation
+
+
+
 
 class EdgeUpdateNetwork(nn.Module):
     def __init__(self, irreps_node: str, irreps_edge: str, irreps_sh: str,
