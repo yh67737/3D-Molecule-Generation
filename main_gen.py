@@ -109,7 +109,7 @@ def main(args):
     # --- Denoiser Config ---
     config.denoiser = Namespace(
         backbone=args.denoiser_backbone,
-        num_blocks=args.denoiser_num_blocks,
+        num_blocks=args.denoiser_blocks,
         cutoff=args.denoiser_cutoff,
         use_gate=args.denoiser_use_gate
     )
@@ -122,17 +122,18 @@ def main(args):
     config.diff = Namespace(
         num_timesteps=args.num_timesteps, time_dim=args.time_dim,
         categorical_space='discrete',
-        diff_pos=Namespace(beta_schedule=args.pos_beta_schedule, scale_start=args.pos_scale_start,
-                           scale_end=args.pos_scale_end, width=args.pos_width),
-        diff_atom=Namespace(beta_schedule=args.atom_beta_schedule, init_prob=args.atom_init_prob,
-                            scale_start=args.atom_scale_start, scale_end=args.atom_scale_end, width=args.atom_width),
-        diff_bond=Namespace(beta_schedule=args.bond_beta_schedule, init_prob=args.bond_init_prob,
-                            time_segment=args.bond_time_segment, segment_diff=segment_diff_for_bond)
+        diff_pos=Namespace(beta_schedule=args.diff_pos_schedule),
+        diff_atom=Namespace(beta_schedule=args.diff_atom_schedule,
+                            init_prob=args.atom_init_prob),
+        diff_bond=Namespace(beta_schedule=args.diff_bond_schedule,
+                            init_prob=args.bond_init_prob,
+                            time_segment=args.bond_time_segment,
+                            segment_diff=segment_diff_for_bond)
     )
 
     # --- 2. 模型实例化与加载 (替换 EDiT) ---
-    num_atom_types = len(args.atomic_numbers)
-    num_edge_types = len(args.mol_bond_types) + 1  # +1 for no-bond type
+    num_atom_types = args.num_atom_types
+    num_edge_types = args.num_edge_types  
 
     model = MolDiff(
         config,
@@ -152,7 +153,7 @@ def main(args):
 
     p_model = RingPredictor(
         node_feature_dim=args.num_atom_types,
-        edge_feature_dim=args.num_bond_types,
+        edge_feature_dim=args.num_edge_types,
         num_ring_classes=1,
         hidden_nf=64,   # EGNN隐藏层维度
         n_layers=4      # EGNN层数
@@ -162,7 +163,7 @@ def main(args):
 
     scheduler = HierarchicalDiffusionScheduler(
         num_atom_types=args.num_atom_types,
-        num_bond_types=args.num_bond_types,
+        num_bond_types=args.num_edge_types,
         T_full=args.T_full,
         T1=args.T1,
         T2=args.T2,
@@ -248,12 +249,12 @@ if __name__ == '__main__':
     # 2. 添加你想从命令行控制的参数
     #    - 首先，让参数文件的路径本身变成一个参数，这样更灵活！
     parser.add_argument('--args_path', type=str, 
-                        default='./saved_args/args_2025-09-16_14-50-27.pt', 
+                        default='./saved_args/args_2025-09-24_11-45-42.pt', 
                         help='Path to the saved arguments .pt file')
     
     #    - 模型路径
     parser.add_argument('--model_ckpt', type=str, 
-                        default='./output/2025-09-16_14-50-27/checkpoints/checkpoint_epoch_20.pth',
+                        default='./output/2025-09-24_11-45-42/checkpoints/best_model.pth',
                         help='Override the model checkpoint path from the args file.')
 
     #    - 生成分子的最大原子数 (default=None)
@@ -263,12 +264,12 @@ if __name__ == '__main__':
     
     #    - 生成分子的最小原子数 (default=None)
     parser.add_argument('--min_atoms', type=int, 
-                        default=5, 
+                        default=2, 
                         help='(Optional) Override the minimum number of atoms before stopping.')
 
     #    - 要生成的分子总数 (default=None)
     parser.add_argument('--num_generate', type=int, 
-                        default=3, 
+                        default=4, 
                         help='(Optional) Override the total number of molecules to generate.')
     # --------------------------------
 
