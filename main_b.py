@@ -143,7 +143,7 @@ def get_args_parser():
     # E-DiT参数
     # --- 模型架构参数 (Model Architecture) ---
     g_arch = parser.add_argument_group('Architecture')
-    g_arch.add_argument('--num_blocks', type=int, default=3, help='Number of E-DiT blocks.')
+    g_arch.add_argument('--num_blocks', type=int, default=6, help='Number of E-DiT blocks.')
     g_arch.add_argument('--num_heads', type=int, default=4, help='Number of attention heads.')
     g_arch.add_argument('--norm_layer', type=str, default='layer', help='Type of normalization layer (e.g., "layer").')
     g_arch.add_argument('--time_embed_dim', type=int, default=64, help='Dimension of timestep embedding.')
