@@ -20,11 +20,12 @@ def DepthwiseTensorProduct(irreps_node_input, irreps_edge_attr, irreps_node_outp
     
     for i, (mul, ir_in) in enumerate(irreps_node_input):
         for j, (_, ir_edge) in enumerate(irreps_edge_attr):
-            for ir_out in ir_in * ir_edge:
-                if ir_out in irreps_node_output or ir_out == o3.Irrep(0, 1):
-                    k = len(irreps_output)
-                    irreps_output.append((mul, ir_out))
-                    instructions.append((i, j, k, 'uvu', True))
+            if i == j:
+                for ir_out in ir_in * ir_edge:
+                    if ir_out in irreps_node_output or ir_out == o3.Irrep(0, 1):
+                        k = len(irreps_output)
+                        irreps_output.append((mul, ir_out))
+                        instructions.append((i, j, k, 'uvu', True))
         
     irreps_output = o3.Irreps(irreps_output)
     irreps_output, p, _ = sort_irreps_even_first(irreps_output) #irreps_output.sort()
@@ -83,7 +84,7 @@ class EquivariantPosUpdate(nn.Module):
         self.node_fusion_rad = RadialProfile(radial_hidden_dim + [self.node_fusion_tp.tp.weight_numel])
 
         # b.将融合后的节点、初始边特征映射到隐藏维度
-        self.node_transform = LinearRS(irreps_edge_in, hidden_irreps)
+        self.node_transform = LinearRS(self.node_fusion_tp.irreps_out, hidden_irreps)
         self.edge_transform = LinearRS(irreps_edge_in, hidden_irreps)
         
         # c.融合节点和边特征
@@ -97,13 +98,13 @@ class EquivariantPosUpdate(nn.Module):
 
         # d.层归一化引入时间特征 (遵循Pre-Norm架构)
         self.norm = AdaEquiLayerNorm(
-            irreps=hidden_irreps, 
+            irreps=self.edge_fusion_tp.irreps_out, 
             time_embedding_dim=time_embedding_dim
         )
         
         # e.将归一化后的特征映射为最终的标量权重，输出为'1x0e'
         self.scalar_predictor = nn.Sequential(
-            LinearRS(hidden_irreps, o3.Irreps('32x0e')), # 先映射到一个中间标量维度
+            LinearRS(self.edge_fusion_tp.irreps_out, o3.Irreps('32x0e')), # 先映射到一个中间标量维度
             nn.SiLU(),
             LinearRS(o3.Irreps('32x0e'), o3.Irreps('1x0e'))  # 再映射到最终的1x0e
         )
