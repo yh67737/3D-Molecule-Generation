@@ -133,8 +133,10 @@ class HierarchicalDiffusionScheduler:
 
         self.alpha_bars = self.alpha_bars_full[:T1 + 1]
 
-        alpha_bar_at_T1 = self.alpha_bars_full[T1]
-        self.delta_bars = alpha_bar_at_T1 * self.gamma_bars
+        # alpha_bar_at_T1 = self.alpha_bars_full[T1]
+        # 现在的delta_bars相当于alpha_bars
+        # self.delta_bars = alpha_bar_at_T1 * self.gamma_bars
+        self.delta_bars = self.gamma_bars
 
         min_val = 1e-7  # 这是一个可以调整的超参数，1e-7 或 1e-8 是一个不错的起点
         
@@ -288,6 +290,111 @@ class HierarchicalDiffusionScheduler:
             raise ValueError(f"Unknown schedule type: {schedule_type}")
         predicted_noise = (r_t - sqrt_bar_t * predicted_r0) / torch.clamp(sqrt_one_minus_bar_t, min=1e-8)
         return predicted_noise
+    
+    def compute_discrete_jump_step(
+        self,
+        x_t: torch.Tensor,
+        pred_x0_logits: torch.Tensor,
+        t_current: int,
+        t_previous: int,
+        schedule_type: str,
+        is_atom: bool,
+        deterministic: bool = False
+    ) -> torch.Tensor:
+        """
+        根据D3PM公式计算从 t_current 步跳跃到 t_previous 步的离散特征。
+        支持随机采样（DDPM-like）和确定性采样（DDIM-like）。
+    
+        Args:
+            x_t: 当前 t_current 步的离散特征（one-hot格式，shape: [N, C]）。
+            pred_x0_logits: 预测的x0的logits（shape: [N, C]）。
+            t_current: 当前时间步（整数）。
+            t_previous: 目标（前一个）时间步（整数）。
+            schedule_type: 调度类型，'alpha'或'gamma'/'delta'。
+            is_atom: 是否为原子类型（True）或边属性（False）。
+            deterministic: 是否使用确定性采样（argmax），默认为False（使用随机采样）。
+        
+        Returns:
+            t_previous 步的离散特征采样结果（one-hot格式，shape: [N, C]）。
+        """
+        # 1. 获取对应的Q_bar矩阵和类别数
+        if is_atom:
+            # 根据 schedule_type 选择正确的累积转移矩阵
+            Q_bar = self.Q_bar_alpha_a if schedule_type in ['alpha'] else self.Q_bar_gamma_a
+            num_classes = self.num_atom_types
+        else:
+            Q_bar = self.Q_bar_alpha_b if schedule_type in ['alpha'] else self.Q_bar_gamma_b
+            num_classes = self.num_bond_types
+            
+        # 安全检查
+        if t_current <= t_previous:
+            raise ValueError(f"t_current ({t_current}) must be greater than t_previous ({t_previous}).")
+
+        # 2. 计算跳步转移矩阵 Q_{t_curr -> t_prev} = Q_bar[t_curr] @ inv(Q_bar[t_prev])
+        Q_bar_t_curr = Q_bar[t_current]      # [C, C]
+        Q_bar_t_prev = Q_bar[t_previous]      # [C, C]
+    
+        # 计算 Q_bar[t_prev] 的伪逆以提高数值稳定性
+        try:
+            Q_bar_t_prev_inv = torch.linalg.pinv(Q_bar_t_prev)
+        except torch.linalg.LinAlgError:
+            # 在极少数情况下，如果伪逆计算失败，可以添加一个小的对角扰动
+            Q_bar_t_prev_inv = torch.linalg.pinv(Q_bar_t_prev + 1e-8 * torch.eye(num_classes, device=self.device))
+            
+        Q_jump = Q_bar_t_curr @ Q_bar_t_prev_inv  # [C, C]
+        
+        # 对计算出的转移矩阵进行后处理，确保其为有效的概率矩阵
+        Q_jump = Q_jump.clamp(min=0.0)
+        Q_jump = Q_jump / Q_jump.sum(dim=1, keepdim=True).clamp(min=1e-8)
+
+        # 3. 计算 p_theta(x0 | x_t)：预测x0的概率分布
+        p_x0 = F.softmax(pred_x0_logits, dim=-1)  # [N, C]
+        
+        # 4. 联合计算 p(x_{previous} | x_t)
+        # 公式: p(x_prev | x_t) ∝ sum_x0 [ q(x_t | x_prev) * q(x_prev | x0) * p(x0 | x_t) ]
+        # q(x_t | x_prev) 对应 Q_jump[x_prev, x_t]
+        # q(x_prev | x0) 对应 Q_bar[t_prev][x0, x_prev]
+    
+        # 将 x_t 从 one-hot 转换为索引格式
+        x_t_idx = torch.argmax(x_t, dim=-1)  # [N]
+    
+        # 初始化 t_previous 步的概率分布
+        batch_size = x_t.shape[0]
+        p_previous = torch.zeros(batch_size, num_classes, device=self.device)
+    
+        for i in range(batch_size):
+            # 获取当前样本的类别索引
+            xt_i = x_t_idx[i]
+        
+            # 对每个可能的 x_{previous} 类别计算其概率
+            for x_prev_idx in range(num_classes):
+                # 获取 q(x_t | x_prev) = Q_jump[x_prev, x_t]
+                # 这是从 x_prev_idx 状态转移到 xt_i 状态的概率
+                q_xt_given_xprev = Q_jump[x_prev_idx, xt_i]
+            
+                # 计算对所有 x0 的贡献总和: sum_x0 [ q(x_prev | x0) * p(x0 | x_t) ]
+                # q(x_prev | x0) 就是 Q_bar[t_prev] 的第 x_prev_idx 列
+                sum_over_x0 = torch.sum(Q_bar_t_prev[:, x_prev_idx] * p_x0[i])
+            
+                # 乘以 q(x_t | x_prev) 得到最终的非归一化概率
+                p_previous[i, x_prev_idx] = q_xt_given_xprev * sum_over_x0
+    
+        # 归一化每个样本的概率分布
+        # 添加一个小的 epsilon 防止除以零
+        p_previous = p_previous / p_previous.sum(dim=1, keepdim=True).clamp(min=1e-8)
+    
+        # 5. 根据 deterministic 参数选择采样方式
+        if deterministic:
+            # DDIM-like 确定性采样: 选择概率最高的类别
+            sampled_idx = torch.argmax(p_previous, dim=-1)
+        else:
+            # DDPM-like 随机采样: 从概率分布中采样
+            sampled_idx = torch.multinomial(p_previous, num_samples=1).squeeze(1)
+    
+        # 6. 将采样结果的索引转换为 one-hot 编码
+        sampled_onehot = F.one_hot(sampled_idx, num_classes=num_classes).float()
+    
+        return sampled_onehot
     
     def compute_discrete_t_minus_1(
         self,

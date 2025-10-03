@@ -4,6 +4,7 @@ from torch_geometric.data import Data, Batch
 import torch.nn as nn
 from tqdm import trange
 from src.training.scheduler import HierarchicalDiffusionScheduler
+import numpy as np
 
 # ==============================================================================
 # 辅助函数
@@ -55,7 +56,7 @@ def symmetrize_bond_logits(edge_index, bond_logits):
             
     return symmetrized_logits
 
-def sample_symmetric_bonds(edge_index, x_t_bonds, pred_logits_b, scheduler, t_gen, schedule_type):
+def sample_symmetric_bonds(edge_index, x_t_bonds, pred_logits_b, scheduler, t_current_val, t_prev_val, schedule_type):
     """
     对给定的边子集进行对称采样。
     
@@ -90,10 +91,11 @@ def sample_symmetric_bonds(edge_index, x_t_bonds, pred_logits_b, scheduler, t_ge
             j = torch.where(mask_rev)[0].item()
             
             # 对边对只采样一次
-            sampled_bond = scheduler.compute_discrete_t_minus_1(
+            sampled_bond = scheduler.compute_discrete_jump_step(
                 x_t=x_t_bonds[i].unsqueeze(0),
                 pred_x0_logits=symmetrized_logits[i].unsqueeze(0),
-                t=t_gen,
+                t_current=t_current_val,
+                t_previous=t_prev_val,
                 schedule_type=schedule_type,
                 is_atom=False
             )
@@ -106,10 +108,11 @@ def sample_symmetric_bonds(edge_index, x_t_bonds, pred_logits_b, scheduler, t_ge
             processed_edges[j] = True
         else:
             # 处理无反向边的情况 (例如自环)
-            sampled_bond = scheduler.compute_discrete_t_minus_1(
+            sampled_bond = scheduler.compute_discrete_jump_step(
                 x_t=x_t_bonds[i].unsqueeze(0),
                 pred_x_logits=symmetrized_logits[i].unsqueeze(0),
-                t=t_gen,
+                t_current=t_current_val,
+                t_previous=t_prev_val,
                 schedule_type=schedule_type,
                 is_atom=False
             )
@@ -192,7 +195,8 @@ def generate_molecule(
     # --- 1. 从一个原子开始 ---
     print("步骤 1: 随机采样第一个原子")
     # a. 随机原子类型 (H,C,N,O,F)
-    atom_type_idx_tensor = torch.randint(0, 5, (1,), device=device)
+    # atom_type_idx_tensor = torch.randint(0, 5, (1,), device=device)
+    atom_type_idx_tensor = torch.tensor([0], device=device, dtype=torch.long)
     atom_type_idx = atom_type_idx_tensor.item() # 获取 python int
     atom_symbol = ATOM_MAP[atom_type_idx]      # 从映射中查找符号
     atom_type = F.one_hot(atom_type_idx_tensor, num_classes=6).float() # 6类，最后一类是吸收态
@@ -308,20 +312,33 @@ def generate_molecule(
 
         # --- 3. 阶段一去噪 (T2 循环) ---
         print(f"步骤 3: 阶段一去噪 (T2={scheduler.T2} -> 1)")
+
+        # ✅ DDIM MODIFICATION: 创建时间步序列
+        if args.sampler_type == 'ddim':
+            # 创建稀疏的时间步序列，例如 [T2, T2-skip, T2-2*skip, ..., 0]
+            # 我们需要包含 0，因为 DDIM 公式需要 t-1
+            time_steps_T2 = np.linspace(0, scheduler.T2, args.ddim_steps_T2 + 1).astype(int)
+            time_steps_T2 = np.flip(time_steps_T2) # 翻转为 [T2, ..., 0]
+        else: # ddpm
+            time_steps_T2 = np.arange(scheduler.T2, -1, -1)
+        print(f"  -> Phase 1 Timestep Sequence (first 5): {time_steps_T2[:5]}...")
         
         # 这是去噪过程中的数据，我们会不断更新它
         denoising_data = current_data.clone()
         
-        for t_gen in trange(scheduler.T2, 0, -1, desc="  Phase 1 Denoising"):
-            t = torch.tensor([t_gen], device=device) # 将 t_gen 转换成一个PyTorch 张量 (Tensor)
-            
+        for i, _ in enumerate(trange(len(time_steps_T2) - 1, desc="  Phase 1 Denoising")):
+            t_current_val = time_steps_T2[i]
+            t_prev_val = time_steps_T2[i+1]
+
+            t = torch.tensor([t_current_val], device=device) # 将 t_gen 转换成一个PyTorch 张量 (Tensor)
+
             # 准备模型输入
             # 这里的 t 是 per-graph 的，模型内部会处理
             target_node_mask = denoising_data.is_new_node.squeeze().bool()
             target_edge_mask = (target_node_mask[denoising_data.edge_index[0]] | target_node_mask[denoising_data.edge_index[1]])
             # edge_index_to_predict = denoising_data.edge_index[:, target_edge_mask]
 
-            if t_gen == scheduler.T2:
+            if i == 0:
                 num_target_edges = target_edge_mask.sum().item()
                 print(f"\n  -> [阶段一] 开始去噪。将对 {num_target_edges} 条目标边进行预测。")
             
@@ -331,17 +348,17 @@ def generate_molecule(
             pred_logits_a = predictions['atom_type_logits']
             pred_logits_b = predictions['bond_logits']
 
-            if t_gen == scheduler.T2:
+            if i == 0:
                 print(f"  -> [阶段一] 模型输出 pred_logits_b 的维度: {pred_logits_b.shape}")
                 # 验证维度是否匹配
                 assert pred_logits_b.shape[0] == num_target_edges, \
                     f"预测的边数 ({pred_logits_b.shape[0]}) 与目标边数 ({num_target_edges}) 不匹配!"
 
-            if t_gen % 2 == 0:
-                with torch.no_grad():
-                    pos_norm = torch.linalg.norm(denoising_data.pos[target_node_mask], dim=-1).mean()
-                    pred_r0_norm = torch.linalg.norm(pred_r0, dim=-1).mean()
-                    # print(f"\n  [T2={t_gen:04d}] Pos Norm: {pos_norm:.4f}, Predicted R0 Norm: {pred_r0_norm:.4f}")
+            # if t_gen % 2 == 0:
+            #     with torch.no_grad():
+            #         pos_norm = torch.linalg.norm(denoising_data.pos[target_node_mask], dim=-1).mean()
+            #         pred_r0_norm = torch.linalg.norm(pred_r0, dim=-1).mean()
+            #         print(f"\n  [T2={t_gen:04d}] Pos Norm: {pos_norm:.4f}, Predicted R0 Norm: {pred_r0_norm:.4f}")
 
             # # 进行一步采样
             # # a. 坐标采样
@@ -383,25 +400,40 @@ def generate_molecule(
 
             # 采用 DDPM 后验采样：mu + sigma * eps，其中 x_recon = 第0步坐标
             x_t = denoising_data.pos[target_node_mask]
-            x_recon = pred_r0  # 这里的 predicted_r0 已经是 x0（你已改为预测第0步坐标）
-            t_batch = t.expand(target_node_mask.sum()).long()
+            # DDIM MODIFICATION: 根据采样器类型选择更新规则
+            if args.sampler_type == 'ddim':
+                alpha_bar_t = scheduler.delta_bars[t_current_val]
+                alpha_bar_prev = scheduler.delta_bars[t_prev_val]
+                
+                # 1. 计算预测的噪声
+                pred_noise = (x_t - torch.sqrt(alpha_bar_t) * pred_r0) / torch.sqrt(1. - alpha_bar_t)
+                
+                # 2. 计算 x_{t-1}
+                # 注意：这里我们使用 eta=0 的确定性 DDIM
+                pos_t_minus_1 = (torch.sqrt(alpha_bar_prev) * pred_r0 + 
+                                 torch.sqrt(1. - alpha_bar_prev) * pred_noise)
 
-            coef_x0 = scheduler.coef_x0_delta[t_batch].unsqueeze(-1)
-            coef_xt = scheduler.coef_xt_delta[t_batch].unsqueeze(-1)
-            sigma   = scheduler.std_delta[t_batch].unsqueeze(-1)
+            else: # DDPM (原始代码)
+                x_recon = pred_r0
+                t_batch = t.expand(target_node_mask.sum()).long()
+                
+                coef_x0 = scheduler.coef_x0_delta[t_batch].unsqueeze(-1)
+                coef_xt = scheduler.coef_xt_delta[t_batch].unsqueeze(-1)
+                sigma   = scheduler.std_delta[t_batch].unsqueeze(-1)
 
-            mu = coef_x0 * x_recon + coef_xt * x_t
-            if t_gen > 1:
-                eps = torch.randn_like(mu)
-                pos_t_minus_1 = mu + sigma * eps
-            else:
-                pos_t_minus_1 = mu  # 最后一步不加噪声
+                mu = coef_x0 * x_recon + coef_xt * x_t
+                if t_current_val > 1:
+                    eps = torch.randn_like(mu)
+                    pos_t_minus_1 = mu + sigma * eps
+                else:
+                    pos_t_minus_1 = mu
 
             # b. 原子类型和边属性采样
-            atom_type_t_minus_1 = scheduler.compute_discrete_t_minus_1(
+            atom_type_t_minus_1 = scheduler.compute_discrete_jump_step(
                 x_t=denoising_data.x[target_node_mask],
                 pred_x0_logits=pred_logits_a,
-                t=t_gen,
+                t_current=t_current_val,
+                t_previous=t_prev_val,
                 schedule_type='delta',
                 is_atom=True
             )
@@ -418,7 +450,8 @@ def generate_molecule(
                 x_t_bonds=denoising_data.edge_attr[target_edge_mask],
                 pred_logits_b=pred_logits_b,
                 scheduler=scheduler,
-                t_gen=t_gen,
+                t_current_val=t_current_val,
+                t_prev_val=t_prev_val,
                 schedule_type='delta'
             )
             
@@ -464,15 +497,26 @@ def generate_molecule(
 
         # --- 4. 阶段二去噪 (T1 循环) ---
         print(f"步骤 4: 阶段二去噪 (T1={scheduler.T1} -> 1)")
+        # ✅ DDIM MODIFICATION: 为 T1 创建时间步序列
+        if args.sampler_type == 'ddim':
+            time_steps_T1 = np.linspace(0, scheduler.T1, args.ddim_steps_T1 + 1).astype(int)
+            time_steps_T1 = np.flip(time_steps_T1)
+        else: # ddpm
+            time_steps_T1 = np.arange(scheduler.T1, -1, -1)
+        print(f"  -> Phase 2 Timestep Sequence (first 5): {time_steps_T1[:5]}...")
+
         # 这里的 fragment 是上一步的结果，我们继续对它进行微调
-        for t_gen in trange(scheduler.T1, 0, -1, desc="  Phase 2 Denoising"):
-            t = torch.tensor([t_gen], device=device) # 将 t_gen 转换成一个PyTorch 张量 (Tensor)
+        for i, _ in enumerate(trange(len(time_steps_T1) - 1, desc="  Phase 2 Denoising")):
+            t_current_val = time_steps_T1[i]
+            t_prev_val = time_steps_T1[i+1]
+            
+            t = torch.tensor([t_current_val], device=device)
             
             # 准备模型输入，这次是全局预测
             target_node_mask = torch.ones(fragment.num_nodes, dtype=torch.bool, device=device)
             target_edge_mask = torch.ones(fragment.num_edges, dtype=torch.bool, device=device)
 
-            if t_gen == scheduler.T1:
+            if i == 0:
                 num_target_edges = target_edge_mask.sum().item()
                 # 注意这里的 num_target_edges 应该等于 fragment.num_edges
                 assert num_target_edges == fragment.num_edges
@@ -483,17 +527,17 @@ def generate_molecule(
             pred_logits_a = predictions['atom_type_logits']
             pred_logits_b = predictions['bond_logits']
 
-            if t_gen == scheduler.T1:
+            if i == 0:
                 print(f"  -> [阶段二] 模型输出 pred_logits_b 的维度: {pred_logits_b.shape}")
                 # 验证维度是否匹配
                 assert pred_logits_b.shape[0] == num_target_edges, \
                     f"预测的边数 ({pred_logits_b.shape[0]}) 与目标边数 ({num_target_edges}) 不匹配!"
 
-            if t_gen % 2 == 0:
-                with torch.no_grad():
-                    pos_norm = torch.linalg.norm(fragment.pos, dim=-1).mean()
-                    pred_r0_norm = torch.linalg.norm(pred_r0, dim=-1).mean()
-                    # print(f"\n  [T1={t_gen:04d}] Pos Norm: {pos_norm:.4f}, Predicted R0 Norm: {pred_r0_norm:.4f}")
+            # if t_gen % 2 == 0:
+            #     with torch.no_grad():
+            #         pos_norm = torch.linalg.norm(fragment.pos, dim=-1).mean()
+            #         pred_r0_norm = torch.linalg.norm(pred_r0, dim=-1).mean()
+            #         print(f"\n  [T1={t_gen:04d}] Pos Norm: {pos_norm:.4f}, Predicted R0 Norm: {pred_r0_norm:.4f}")
 
             # # 全局采样
             # pred_noise = scheduler.get_predicted_noise_from_r0(fragment.pos, t.expand(fragment.num_nodes), pred_r0, 'alpha')
@@ -524,27 +568,37 @@ def generate_molecule(
             # pos_t_minus_1 = c3 * predicted_x0 + c4 * pred_noise
 
             # 采用 DDPM 后验采样：mu + sigma * eps，其中 x_recon = 第0步坐标
-            x_t = fragment.pos
-            x_recon = pred_r0  # 这里的 predicted_r0 已经是 x0
-            t_batch = t.expand(fragment.num_nodes).long()
+            # ✅ DDIM MODIFICATION: 再次应用采样器逻辑
+            if args.sampler_type == 'ddim':
+                alpha_bar_t = scheduler.alpha_bars[t_current_val]
+                alpha_bar_prev = scheduler.alpha_bars[t_prev_val]
+                
+                pred_noise = (x_t - torch.sqrt(alpha_bar_t) * pred_r0) / torch.sqrt(1. - alpha_bar_t)
+                
+                pos_t_minus_1 = (torch.sqrt(alpha_bar_prev) * pred_r0 + 
+                                 torch.sqrt(1. - alpha_bar_prev) * pred_noise)
+            else: # DDPM
+                x_recon = pred_r0
+                t_batch = t.expand(fragment.num_nodes).long()
+                
+                coef_x0 = scheduler.coef_x0_alpha[t_batch].unsqueeze(-1)
+                coef_xt = scheduler.coef_xt_alpha[t_batch].unsqueeze(-1)
+                sigma   = scheduler.std_alpha[t_batch].unsqueeze(-1)
 
-            coef_x0 = scheduler.coef_x0_alpha[t_batch].unsqueeze(-1)
-            coef_xt = scheduler.coef_xt_alpha[t_batch].unsqueeze(-1)
-            sigma   = scheduler.std_alpha[t_batch].unsqueeze(-1)
-
-            mu = coef_x0 * x_recon + coef_xt * x_t
-            if t_gen > 1:
-                eps = torch.randn_like(mu)
-                pos_t_minus_1 = mu + sigma * eps
-            else:
-                pos_t_minus_1 = mu  # 最后一步不加噪声
+                mu = coef_x0 * x_recon + coef_xt * x_t
+                if t_current_val > 1:
+                    eps = torch.randn_like(mu)
+                    pos_t_minus_1 = mu + sigma * eps
+                else:
+                    pos_t_minus_1 = mu
             
             fragment.pos = pos_t_minus_1
             
-            fragment.x = scheduler.compute_discrete_t_minus_1(            
+            fragment.x = scheduler.compute_discrete_jump_step(            
                 x_t=fragment.x[target_node_mask],
                 pred_x0_logits=pred_logits_a,
-                t=t_gen,
+                t_current=t_current_val,
+                t_previous=t_prev_val,
                 schedule_type='alpha',
                 is_atom=True
             )
@@ -561,7 +615,8 @@ def generate_molecule(
                 x_t_bonds=fragment.edge_attr[target_edge_mask], # 传入更新前的状态
                 pred_logits_b=pred_logits_b,
                 scheduler=scheduler,
-                t_gen=t_gen,
+                t_current_val=t_current_val,
+                t_prev_val=t_prev_val,
                 schedule_type='alpha'
             )
 

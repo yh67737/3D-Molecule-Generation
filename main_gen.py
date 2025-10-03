@@ -249,12 +249,12 @@ if __name__ == '__main__':
     # 2. 添加你想从命令行控制的参数
     #    - 首先，让参数文件的路径本身变成一个参数，这样更灵活！
     parser.add_argument('--args_path', type=str, 
-                        default='./saved_args/args_2025-09-24_11-45-42.pt', 
+                        default='./saved_args/args_2025-10-03_17-59-22.pt', 
                         help='Path to the saved arguments .pt file')
     
     #    - 模型路径
     parser.add_argument('--model_ckpt', type=str, 
-                        default='./output/2025-09-24_11-45-42/checkpoints/best_model.pth',
+                        default='./output/2025-10-03_17-59-22/checkpoints/best_model.pth',
                         help='Override the model checkpoint path from the args file.')
 
     #    - 生成分子的最大原子数 (default=None)
@@ -269,8 +269,16 @@ if __name__ == '__main__':
 
     #    - 要生成的分子总数 (default=None)
     parser.add_argument('--num_generate', type=int, 
-                        default=4, 
+                        default=20, 
                         help='(Optional) Override the total number of molecules to generate.')
+    
+    # --- ✅ 新增 DDIM 参数 ---
+    parser.add_argument('--sampler_type', type=str, default='ddim', choices=['ddpm', 'ddim'],
+                        help="Sampler to use for generation ('ddpm' or 'ddim').")
+    parser.add_argument('--ddim_steps_T2', type=int, default=18,
+                        help="Number of T2 steps for DDIM sampler. Ignored if sampler_type is 'ddpm'.")
+    parser.add_argument('--ddim_steps_T1', type=int, default=2,
+                        help="Number of T1 steps for DDIM sampler. Ignored if sampler_type is 'ddpm'.")
     # --------------------------------
 
     # 3. 解析来自命令行的参数
@@ -279,6 +287,11 @@ if __name__ == '__main__':
     # 4. 先从文件加载基础参数
     args = load_args(cli_args.args_path)
     print(f"原始模型路径 (from file): {args.model_ckpt}")
+
+    # --- ✅ 关键修改：在这里添加下面两行代码 ---
+    print(">>> 强制单卡运行模式 <<<")
+    args.distributed = False
+    # -----------------------------------------
 
     # 5. 用命令行参数覆盖文件中的参数（如果提供了的话）
     override_count = 0
@@ -304,6 +317,16 @@ if __name__ == '__main__':
     
     if override_count == 0:
         print("No parameters overridden, using all values from the loaded args file.")
+
+    # --- ✅ 将新的采样器参数也添加到 args 对象中 ---
+    args.sampler_type = cli_args.sampler_type
+    args.ddim_steps_T2 = cli_args.ddim_steps_T2
+    args.ddim_steps_T1 = cli_args.ddim_steps_T1
+    print(f"✅ Sampler type set to: {args.sampler_type}")
+    if args.sampler_type == 'ddim':
+        print(f"✅ DDIM T2 steps set to: {args.ddim_steps_T2}")
+        print(f"✅ DDIM T1 steps set to: {args.ddim_steps_T1}")
+    # ---------------------------------------------
 
     # 6. 使用最终确定的参数运行主函数
     main(args)
