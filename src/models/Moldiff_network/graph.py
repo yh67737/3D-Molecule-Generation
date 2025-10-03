@@ -254,8 +254,17 @@ class EdgeBlock(Module):
         self.use_gate = use_gate
         inter_dim = edge_dim * 2 if hidden_dim is None else hidden_dim
 
-        self.bond_ffn_left = BondFFN(edge_dim, node_dim, inter_dim=inter_dim, use_gate=use_gate)
-        self.bond_ffn_right = BondFFN(edge_dim, node_dim, inter_dim=inter_dim, use_gate=use_gate)
+        self.bond_linear_left = Linear(edge_dim, inter_dim, bias=False)
+        self.node_linear_left = Linear(node_dim, inter_dim, bias=False)
+        self.inter_module_left = MLP(inter_dim, edge_dim, inter_dim)
+        if self.use_gate:
+            self.gate_left = MLP(edge_dim + node_dim + 1, edge_dim, 32)  # +1 for time
+
+        self.bond_linear_right = Linear(edge_dim, inter_dim, bias=False)
+        self.node_linear_right = Linear(node_dim, inter_dim, bias=False)
+        self.inter_module_right = MLP(inter_dim, edge_dim, inter_dim)
+        if self.use_gate:
+            self.gate_right = MLP(edge_dim + node_dim + 1, edge_dim, 32) # +1 for time
 
         self.node_ffn_left = Linear(node_dim, edge_dim)
         self.node_ffn_right = Linear(node_dim, edge_dim)
@@ -275,11 +284,25 @@ class EdgeBlock(Module):
         left_node, right_node = bond_index
 
         # message from neighbor bonds
-        msg_bond_left = self.bond_ffn_left(h_bond, h_node[left_node], bond_time)
+        bond_feat_left = self.bond_linear_left(h_bond)
+        node_feat_left = self.node_linear_left(h_node[left_node])
+        inter_feat_left = bond_feat_left * node_feat_left
+        msg_bond_left = self.inter_module_left(inter_feat_left)
+        if self.use_gate:
+            gate_left = self.gate_left(torch.cat([h_bond, h_node[left_node], bond_time], dim=-1))
+            msg_bond_left = msg_bond_left * torch.sigmoid(gate_left)
+
         msg_bond_left = scatter_sum(msg_bond_left, right_node, dim=0, dim_size=N)
         msg_bond_left = msg_bond_left[left_node]
 
-        msg_bond_right = self.bond_ffn_right(h_bond, h_node[right_node], bond_time)
+        bond_feat_right = self.bond_linear_right(h_bond)
+        node_feat_right = self.node_linear_right(h_node[right_node])
+        inter_feat_right = bond_feat_right * node_feat_right
+        msg_bond_right = self.inter_module_right(inter_feat_right)
+        if self.use_gate:
+            gate_right = self.gate_right(torch.cat([h_bond, h_node[right_node], bond_time], dim=-1))
+            msg_bond_right = msg_bond_right * torch.sigmoid(gate_right)
+            
         msg_bond_right = scatter_sum(msg_bond_right, left_node, dim=0, dim_size=N)
         msg_bond_right = msg_bond_right[right_node]
         
@@ -367,6 +390,7 @@ class NodeEdgeNet(Module):
         return h_node, pos_node, h_edge
 
     def _build_edges_dist(self, pos, edge_index):
+        pos = pos.detach().clone()
         # distance
         relative_vec = pos[edge_index[0]] - pos[edge_index[1]]
         distance = torch.norm(relative_vec, dim=-1, p=2)
