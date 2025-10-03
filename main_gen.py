@@ -226,12 +226,12 @@ def main(args):
             save_path = os.path.join(args.generated_pyg_dir, output_pkl_filename)
             with open(save_path, 'wb') as f:
                 pickle.dump(all_molecules, f)
-            logger.info(f"✅ 所有进程生成完成，共 {len(all_molecules)} 个分子，保存至: {save_path}")
+            logger.info(f"所有进程生成完成，共 {len(all_molecules)} 个分子，保存至: {save_path}")
     else:
         save_path = os.path.join(args.generated_pyg_dir, output_pkl_filename)
         with open(save_path, 'wb') as f:
             pickle.dump(molecules, f)
-        logger.info(f"✅ 非分布式，共生成 {len(molecules)} 个分子，保存至: {save_path}")
+        logger.info(f"非分布式，共生成 {len(molecules)} 个分子，保存至: {save_path}")
 
 
 # if __name__ == '__main__':
@@ -269,8 +269,14 @@ if __name__ == '__main__':
 
     #    - 要生成的分子总数 (default=None)
     parser.add_argument('--num_generate', type=int, 
-                        default=4, 
+                        default=1, 
                         help='(Optional) Override the total number of molecules to generate.')
+    
+    # --- ✅ 新增 DDIM 参数 ---
+    parser.add_argument('--sampler_type', type=str, default='ddim', choices=['ddpm', 'ddim'],
+                        help="Sampler to use for generation ('ddpm' or 'ddim').")
+    parser.add_argument('--ddim_steps', type=int, default=20,
+                        help="Number of steps for DDIM sampler. Ignored if sampler_type is 'ddpm'.")
     # --------------------------------
 
     # 3. 解析来自命令行的参数
@@ -304,6 +310,14 @@ if __name__ == '__main__':
     
     if override_count == 0:
         print("No parameters overridden, using all values from the loaded args file.")
+
+    # --- ✅ 将新的采样器参数也添加到 args 对象中 ---
+    args.sampler_type = cli_args.sampler_type
+    args.ddim_steps = cli_args.ddim_steps
+    print(f"✅ Sampler type set to: {args.sampler_type}")
+    if args.sampler_type == 'ddim':
+        print(f"✅ DDIM steps set to: {args.ddim_steps}")
+    # ---------------------------------------------
 
     # 6. 使用最终确定的参数运行主函数
     main(args)
