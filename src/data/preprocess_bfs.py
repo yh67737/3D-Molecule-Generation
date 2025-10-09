@@ -25,11 +25,12 @@ def get_bfs_order(graph_data, start_node = None) -> list:
 
     # 构建邻接表以便于遍历
     adj = {i: [] for i in range(graph_data.num_nodes)}
-    if graph_data.edge_index is not None:
+    if graph_data.edge_index is not None and graph_data.edge_attr is not None:
         for i in range(graph_data.edge_index.shape[1]):
-            u, v = graph_data.edge_index[:, i].tolist()
-            adj[u].append(v)
-            adj[v].append(u)
+            if graph_data.edge_attr[i][-1] != 1:
+                u, v = graph_data.edge_index[:, i].tolist()
+                adj[u].append(v)
+                adj[v].append(u)
 
     # 执行标准的BFS流程
     order = []
