@@ -39,3 +39,7 @@ build/
 
 # .whl 文件
 *.whl
+
+# 数据文件
+*.pkl
+*.mol
