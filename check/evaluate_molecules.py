@@ -13,10 +13,9 @@ BOND_TYPE_MAP = {
     0: Chem.rdchem.BondType.SINGLE,
     1: Chem.rdchem.BondType.DOUBLE,
     2: Chem.rdchem.BondType.TRIPLE,
-    3: Chem.rdchem.BondType.AROMATIC
 }
 ABSORBING_ATOM_TYPE_INDEX = 5
-NO_BOND_EDGE_TYPE_INDEX = 4
+NO_BOND_EDGE_TYPE_INDEX = 3
 
 # --- 2. 核心辅助函数 ---
 
@@ -156,11 +155,11 @@ def evaluate_and_save_molecules(generated_mols_list, training_mols_list, output_
 if __name__ == '__main__':
     # --- 用户配置区 ---
     # 输入文件
-    TRAINING_DATASET_PATH = 'gdb9_pyg_dataset_fully_connected.pt'
-    GENERATED_MOLECULES_PATH = 'generated_molecules_from_best_model.pkl'
+    TRAINING_DATASET_PATH = 'src/data/gdb9_pyg_dataset_fc_no_aromatic_removed.pt'
+    GENERATED_MOLECULES_PATH = 'output/2025-10-12_12-18-57/generated_pyg/generated_molecules_from_best_model.pkl'
     
     # 输出目录
-    OUTPUT_DIRECTORY_FOR_VALID_MOLS = 'valid_molecules_output'
+    OUTPUT_DIRECTORY_FOR_VALID_MOLS = 'output/2025-10-12_12-18-57/valid_molecules_output'
     
     # --- 脚本执行区 ---
     print("--- 开始执行分子评估与保存脚本 ---")

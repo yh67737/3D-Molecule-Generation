@@ -264,18 +264,18 @@ if __name__ == '__main__':
     
     #    - 生成分子的最小原子数 (default=None)
     parser.add_argument('--min_atoms', type=int, 
-                        default=2, 
+                        default=1, 
                         help='(Optional) Override the minimum number of atoms before stopping.')
 
     #    - 要生成的分子总数 (default=None)
     parser.add_argument('--num_generate', type=int, 
-                        default=20, 
+                        default=100, 
                         help='(Optional) Override the total number of molecules to generate.')
     
     # --- ✅ 新增 DDIM 参数 ---
     parser.add_argument('--sampler_type', type=str, default='ddim', choices=['ddpm', 'ddim'],
                         help="Sampler to use for generation ('ddpm' or 'ddim').")
-    parser.add_argument('--ddim_steps', type=int, default=50,
+    parser.add_argument('--ddim_steps', type=int, default=20,
                         help="Number of steps for DDIM sampler. Ignored if sampler_type is 'ddpm'.")
     # --------------------------------
 

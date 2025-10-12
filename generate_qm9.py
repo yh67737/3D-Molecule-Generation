@@ -190,7 +190,7 @@ def generate_molecule(
     p_model.eval() # 评估模式 (Evaluation Mode)
 
     ATOM_MAP = ['H', 'C', 'N', 'O', 'F', 'Absorb']
-    BOND_MAP = ['Single', 'Double', 'Triple', 'Aromatic', 'No Bond']
+    BOND_MAP = ['Single', 'Double', 'Triple', 'No Bond']
 
     # --- 1. 从一个原子开始 ---
     print("步骤 1: 随机采样第一个原子")
@@ -228,7 +228,7 @@ def generate_molecule(
         # a. 添加带噪的新原子
         print("步骤 2: 添加带噪的新原子")
         # i. 新原子类型为吸收态
-        absorbing_state_idx = 4
+        absorbing_state_idx = 5
         new_atom_type_idx = torch.tensor([absorbing_state_idx], device=device)
         new_atom_type = F.one_hot(new_atom_type_idx, num_classes=6).float()
         
