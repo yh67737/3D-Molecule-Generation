@@ -159,7 +159,7 @@ if __name__ == '__main__':
     GENERATED_MOLECULES_PATH = 'output/2025-10-12_01-06-18/generated_pyg/generated_molecules_from_best_model.pkl'
     
     # 输出目录
-    OUTPUT_DIRECTORY_FOR_VALID_MOLS = 'valid_molecules_output'
+    OUTPUT_DIRECTORY_FOR_VALID_MOLS = 'output/2025-10-12_01-06-18/valid_molecules_output'
     
     # --- 脚本执行区 ---
     print("--- 开始执行分子评估与保存脚本 ---")

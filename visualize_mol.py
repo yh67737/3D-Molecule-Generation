@@ -157,8 +157,22 @@ def visualize_and_save_molecules(pkl_path, image_dir, structure_dir):
         #    我们假设真实的键类型索引是 0, 1, 2, 3。
         has_bond_mask = bond_types_idx < len(BOND_TYPE_MAP)
         
+        # 检查输入是否为 PyTorch 张量或 NumPy 数组
+        is_torch_tensor = hasattr(edge_connects_real_atoms_mask, 'to')
+
+        if is_torch_tensor:
+            # --- PyTorch 张量的修复方案 ---
+            # 显式地将两个掩码都转换为布尔类型
+            edge_connects_real_atoms_mask_bool = edge_connects_real_atoms_mask.to(torch.bool)
+            has_bond_mask_bool = has_bond_mask.to(torch.bool)
+        else:
+            # --- NumPy 数组的修复方案 ---
+            # 显式地将两个掩码都转换为布尔类型
+            edge_connects_real_atoms_mask_bool = edge_connects_real_atoms_mask.astype(bool)
+            has_bond_mask_bool = has_bond_mask.astype(bool)
+        
         # 3. 将两个mask合并，得到最终有效的边
-        valid_bonds_mask = edge_connects_real_atoms_mask & has_bond_mask
+        valid_bonds_mask = edge_connects_real_atoms_mask_bool & has_bond_mask_bool
         # <--- 修改结束 --->
         
         if not np.any(valid_bonds_mask):
