@@ -94,7 +94,7 @@ def get_args_parser():
                         help="断点加载参数路径 (Path to checkpoint to resume training from)")
 
     # 训练流程
-    parser.add_argument('--epochs', type=int, default=500, help='Total number of training epochs')
+    parser.add_argument('--epochs', type=int, default=150, help='Total number of training epochs')
     parser.add_argument('--learning_rate', type=float, default=1e-4, help='Learning rate for the Adam optimizer(model)')
     parser.add_argument('--lr_min_factor', type=float, default=0.001, 
                     help="学习率下限因子，最终学习率 = lr_min_factor × 初始学习率")
@@ -145,7 +145,7 @@ def get_args_parser():
     g_model.add_argument('--node_dim', type=int, default=256, help='Dimension for node features.')
     g_model.add_argument('--edge_dim', type=int, default=64, help='Dimension for edge features.')
     g_model.add_argument('--num_atom_types', type=int, default=6, help='Number of atom types for embedding.')
-    g_model.add_argument('--num_edge_types', type=int, default=5, help='Number of bond types for embedding.')
+    g_model.add_argument('--num_edge_types', type=int, default=4, help='Number of bond types for embedding.')
     g_model.add_argument('--bond_len_loss', action='store_true', default=False,
                          help='Enable bond length loss (Note: this is an internal loss, may not be used in the adapted training loop).')
 
@@ -177,7 +177,7 @@ def get_args_parser():
                             help='Use gate mechanism in NodeEdgeNet.')
     
     # 环生成指导网络
-    parser.add_argument('--ring_guide_ckpt', type=str, default='./src/models/ring_network/ring_predictor_epoch_50.pt', help='Path to pre-trained ring guidance network checkpoint.')
+    parser.add_argument('--ring_guide_ckpt', type=str, default='./src/models/ring_network/ring_predictor_epoch_10.pt', help='Path to pre-trained ring guidance network checkpoint.')
 
     parser.add_argument('--optimizer', type=str, default='sam', help='Optimizer (e.g., adamw, sgd).')
     parser.add_argument('--weight_decay', type=float, default=1e-2, help='Weight decay for optimizer.')

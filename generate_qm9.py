@@ -195,8 +195,7 @@ def generate_molecule(
     # --- 1. 从一个原子开始 ---
     print("步骤 1: 随机采样第一个原子")
     # a. 随机原子类型 (H,C,N,O,F)
-    # atom_type_idx_tensor = torch.randint(0, 5, (1,), device=device)
-    atom_type_idx_tensor = torch.tensor([0], device=device, dtype=torch.long)
+    atom_type_idx_tensor = torch.randint(0, 4, (1,), device=device)
     atom_type_idx = atom_type_idx_tensor.item() # 获取 python int
     atom_symbol = ATOM_MAP[atom_type_idx]      # 从映射中查找符号
     atom_type = F.one_hot(atom_type_idx_tensor, num_classes=6).float() # 6类，最后一类是吸收态
@@ -229,7 +228,7 @@ def generate_molecule(
         # a. 添加带噪的新原子
         print("步骤 2: 添加带噪的新原子")
         # i. 新原子类型为吸收态
-        absorbing_state_idx = 5
+        absorbing_state_idx = 4
         new_atom_type_idx = torch.tensor([absorbing_state_idx], device=device)
         new_atom_type = F.one_hot(new_atom_type_idx, num_classes=6).float()
         
@@ -281,10 +280,10 @@ def generate_molecule(
         num_new_edges = new_edge_index.shape[1] # 获取新边的总数
 
         # b. 为新边创建 "无键" 属性
-        no_bond_idx = 4
+        no_bond_idx = 3
         new_edge_attr = F.one_hot(
             torch.full((num_new_edges,), no_bond_idx, device=device), # 指定形状为num_new_edges，填充值为no_bond_idx的一维向量，如tensor([4, 4, 4, 4, 4, 4])
-            num_classes = 5
+            num_classes = 4
         ).float() # 将上一步的索引列表转换为 one-hot 编码
         # e.g.
         # tensor([[0., 0., 0., 0., 1.],

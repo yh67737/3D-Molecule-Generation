@@ -16,15 +16,14 @@ ATOM_MAP = ['H', 'C', 'N', 'O', 'F', 'Absorbing']
 ATOM_COLORS = {'H': 'white', 'C': 'black', 'N': 'blue', 'O': 'red', 'F': 'green'}
 
 # 2. 边/键类型 (用于.mol文件)
-BOND_TYPE_MAP = {0: 1, 1: 2, 2: 3, 3: 4} # SINGLE, DOUBLE, TRIPLE, AROMATIC
+BOND_TYPE_MAP = {0: 1, 1: 2, 2: 3} # SINGLE, DOUBLE, TRIPLE
 # <--- 修改开始 --->
 # 3. 边/键的绘制样式 (用于matplotlib)
-# 为单键、双键、三键、芳香键定义不同的线宽
+# 为单键、双键、三键定义不同的线宽
 BOND_STYLE_MAP = {
     0: {'color': 'black', 'linewidth': 2.0},  # 单键
     1: {'color': 'black', 'linewidth': 4.0},  # 双键
     2: {'color': 'black', 'linewidth': 6.0},  # 三键
-    3: {'color': 'gray', 'linewidth': 2.0, 'linestyle': '--'} # 芳香键
 }
 # <--- 修改结束 --->
 
@@ -157,6 +156,20 @@ def visualize_and_save_molecules(pkl_path, image_dir, structure_dir):
         # 2. 创建另一个mask，筛选出预测为真实化学键的边 (排除了 "no bond" 类别)
         #    我们假设真实的键类型索引是 0, 1, 2, 3。
         has_bond_mask = bond_types_idx < len(BOND_TYPE_MAP)
+
+        # --- DEBUGGING START ---
+        print(f"--- Debugging Molecule ---")
+        print(f"Type of edge_connects_real_atoms_mask: {edge_connects_real_atoms_mask.dtype}")
+        print(f"Value of edge_connects_real_atoms_mask (sample): {edge_connects_real_atoms_mask[:5]}")
+
+        print(f"Type of has_bond_mask: {has_bond_mask.dtype}")
+        print(f"Value of has_bond_mask (sample): {has_bond_mask[:5]}")
+        # --- DEBUGGING END ---
+
+        # --- FIX ---
+        # 显式地将两个掩码都转换为布尔类型
+        edge_connects_real_atoms_mask_bool = edge_connects_real_atoms_mask.astype(bool)
+        has_bond_mask_bool = has_bond_mask.astype(bool)
         
         # 3. 将两个mask合并，得到最终有效的边
         valid_bonds_mask = edge_connects_real_atoms_mask & has_bond_mask
@@ -204,7 +217,7 @@ def visualize_and_save_molecules(pkl_path, image_dir, structure_dir):
 if __name__ == '__main__':
     # --- 用户配置区 ---
     model_name_stem = 'best_model'
-    pkl_file_path = f'output/2025-09-24_11-45-42/generated_pyg/generated_molecules_from_{model_name_stem}.pkl'
+    pkl_file_path = f'output/2025-10-12_12-18-57/generated_pyg/generated_molecules_from_{model_name_stem}.pkl'
     
     output_parent_dir = Path(pkl_file_path).parent
     image_output_dir = os.path.join(output_parent_dir, 'images')
