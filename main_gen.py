@@ -249,12 +249,12 @@ if __name__ == '__main__':
     # 2. 添加你想从命令行控制的参数
     #    - 首先，让参数文件的路径本身变成一个参数，这样更灵活！
     parser.add_argument('--args_path', type=str, 
-                        default='./saved_args/args_2025-10-03_17-59-22.pt', 
+                        default='./saved_args/args_2025-10-12_01-06-18.pt', 
                         help='Path to the saved arguments .pt file')
     
     #    - 模型路径
     parser.add_argument('--model_ckpt', type=str, 
-                        default='./output/2025-10-03_17-59-22/checkpoints/best_model.pth',
+                        default='./output/2025-10-12_01-06-18/checkpoints/best_model.pth',
                         help='Override the model checkpoint path from the args file.')
 
     #    - 生成分子的最大原子数 (default=None)
@@ -280,6 +280,11 @@ if __name__ == '__main__':
     parser.add_argument('--ddim_steps_T1', type=int, default=2,
                         help="Number of T1 steps for DDIM sampler. Ignored if sampler_type is 'ddpm'.")
     # --------------------------------
+
+    # +++ 在这里添加新的参数 +++
+    parser.add_argument('--ring_guide_ckpt', type=str, default='./src/models/ring_network/ring_predictor_epoch_10.pt',
+                        help='(Optional) Override the ring guide model checkpoint path.')
+    # ++++++++++++++++++++++++++
 
     # 3. 解析来自命令行的参数
     cli_args = parser.parse_args()
@@ -314,6 +319,13 @@ if __name__ == '__main__':
         args.num_generate = cli_args.num_generate
         print(f"✅ 'num_generate' overridden to: {args.num_generate}")
         override_count += 1
+
+    # +++ 在这里添加新的覆盖逻辑 +++
+    if cli_args.ring_guide_ckpt is not None:
+        args.ring_guide_ckpt = cli_args.ring_guide_ckpt
+        print(f"✅ 'ring_guide_ckpt' overridden to: {args.ring_guide_ckpt}")
+        override_count += 1
+    # ++++++++++++++++++++++++++++
     
     if override_count == 0:
         print("No parameters overridden, using all values from the loaded args file.")

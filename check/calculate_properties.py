@@ -13,10 +13,9 @@ BOND_TYPE_MAP = {
     0: Chem.rdchem.BondType.SINGLE,
     1: Chem.rdchem.BondType.DOUBLE,
     2: Chem.rdchem.BondType.TRIPLE,
-    3: Chem.rdchem.BondType.AROMATIC
 }
 ABSORBING_ATOM_TYPE_INDEX = 5
-NO_BOND_EDGE_TYPE_INDEX = 4
+NO_BOND_EDGE_TYPE_INDEX = 3
 
 # --- 核心转换函数 (保持不变) ---
 # 这个函数负责将图数据转换为 RDKit 可以理解的分子结构

@@ -16,15 +16,14 @@ ATOM_MAP = ['H', 'C', 'N', 'O', 'F', 'Absorbing']
 ATOM_COLORS = {'H': 'white', 'C': 'black', 'N': 'blue', 'O': 'red', 'F': 'green'}
 
 # 2. 边/键类型 (用于.mol文件)
-BOND_TYPE_MAP = {0: 1, 1: 2, 2: 3, 3: 4} # SINGLE, DOUBLE, TRIPLE, AROMATIC
+BOND_TYPE_MAP = {0: 1, 1: 2, 2: 3} # SINGLE, DOUBLE, TRIPLE
 # <--- 修改开始 --->
 # 3. 边/键的绘制样式 (用于matplotlib)
-# 为单键、双键、三键、芳香键定义不同的线宽
+# 为单键、双键、三键定义不同的线宽
 BOND_STYLE_MAP = {
     0: {'color': 'black', 'linewidth': 2.0},  # 单键
     1: {'color': 'black', 'linewidth': 4.0},  # 双键
     2: {'color': 'black', 'linewidth': 6.0},  # 三键
-    3: {'color': 'gray', 'linewidth': 2.0, 'linestyle': '--'} # 芳香键
 }
 # <--- 修改结束 --->
 
@@ -204,7 +203,7 @@ def visualize_and_save_molecules(pkl_path, image_dir, structure_dir):
 if __name__ == '__main__':
     # --- 用户配置区 ---
     model_name_stem = 'best_model'
-    pkl_file_path = f'output/2025-10-03_17-59-22/generated_pyg/generated_molecules_from_{model_name_stem}.pkl'
+    pkl_file_path = f'output/2025-10-12_01-06-18/generated_pyg/generated_molecules_from_{model_name_stem}.pkl'
     
     output_parent_dir = Path(pkl_file_path).parent
     image_output_dir = os.path.join(output_parent_dir, 'images')
