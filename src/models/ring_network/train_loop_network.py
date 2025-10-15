@@ -11,7 +11,7 @@ from torch_geometric.loader import DataLoader
 from torch_geometric.nn import GATConv
 from sklearn.metrics import accuracy_score
 from tqdm import tqdm
-from src.models.ring_network.egnn_new import EGNN 
+from .egnn_new import EGNN 
 
 # --- RingPredictor 模型定义 (保持不变) ---
 class RingPredictor(torch.nn.Module):
@@ -127,7 +127,7 @@ def evaluate(model, loader, criterion, device):
 
 if __name__ == '__main__':
     # 使用新的预处理数据集 ---
-    PREPROCESSED_DATA_DIR = 'prepared_data/gdb9_pt_data_for_ring_predictor'
+    PREPROCESSED_DATA_DIR = 'src/models/ring_network/gdb9_pt_data_for_ring_predictor'
     BATCH_SIZE = 1024
     LEARNING_RATE = 1e-4
     EPOCHS = 50

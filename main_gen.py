@@ -186,12 +186,12 @@ def main(args):
             save_path = os.path.join(args.generated_pyg_dir, output_pkl_filename)
             with open(save_path, 'wb') as f:
                 pickle.dump(all_molecules, f)
-            logger.info(f"所有进程生成完成，共 {len(all_molecules)} 个分子，保存至: {save_path}")
+            logger.info(f"✅ 所有进程生成完成，共 {len(all_molecules)} 个分子，保存至: {save_path}")
     else:
         save_path = os.path.join(args.generated_pyg_dir, output_pkl_filename)
         with open(save_path, 'wb') as f:
             pickle.dump(molecules, f)
-        logger.info(f"非分布式，共生成 {len(molecules)} 个分子，保存至: {save_path}")
+        logger.info(f"✅ 非分布式，共生成 {len(molecules)} 个分子，保存至: {save_path}")
 
 
 # if __name__ == '__main__':
@@ -209,35 +209,41 @@ if __name__ == '__main__':
     # 2. 添加你想从命令行控制的参数
     #    - 首先，让参数文件的路径本身变成一个参数，这样更灵活！
     parser.add_argument('--args_path', type=str, 
-                        default='./saved_args/args_2025-09-24_16-41-38.pt', 
+                        default='./saved_args/args_2025-10-15_09-01-50.pt', 
                         help='Path to the saved arguments .pt file')
     
     #    - 模型路径
     parser.add_argument('--model_ckpt', type=str, 
-                        default='./output/2025-2025-09-24_16-41-38/checkpoints/best_model.pth',
+                        default='./output/2025-10-15_09-01-50/checkpoints/best_model.pth',
                         help='Override the model checkpoint path from the args file.')
 
     #    - 生成分子的最大原子数 (default=None)
     parser.add_argument('--max_atoms', type=int, 
-                        default=30, 
+                        default=50, 
                         help='(Optional) Override the maximum number of atoms per molecule.')
     
     #    - 生成分子的最小原子数 (default=None)
     parser.add_argument('--min_atoms', type=int, 
-                        default=2, 
+                        default=1, 
                         help='(Optional) Override the minimum number of atoms before stopping.')
 
     #    - 要生成的分子总数 (default=None)
     parser.add_argument('--num_generate', type=int, 
-                        default=1, 
+                        default=100, 
                         help='(Optional) Override the total number of molecules to generate.')
-    
+    # --------------------------------
+
     # --- ✅ 新增 DDIM 参数 ---
     parser.add_argument('--sampler_type', type=str, default='ddim', choices=['ddpm', 'ddim'],
                         help="Sampler to use for generation ('ddpm' or 'ddim').")
     parser.add_argument('--ddim_steps', type=int, default=20,
                         help="Number of steps for DDIM sampler. Ignored if sampler_type is 'ddpm'.")
     # --------------------------------
+
+    # +++ 在这里添加新的参数 +++
+    parser.add_argument('--ring_guide_ckpt', type=str, default='./src/models/ring_network/ring_predictor_epoch_10.pt',
+                        help='(Optional) Override the ring guide model checkpoint path.')
+    # ++++++++++++++++++++++++++
 
     # 3. 解析来自命令行的参数
     cli_args = parser.parse_args()
@@ -267,6 +273,13 @@ if __name__ == '__main__':
         args.num_generate = cli_args.num_generate
         print(f"✅ 'num_generate' overridden to: {args.num_generate}")
         override_count += 1
+
+    # +++ 在这里添加新的覆盖逻辑 +++
+    if cli_args.ring_guide_ckpt is not None:
+        args.ring_guide_ckpt = cli_args.ring_guide_ckpt
+        print(f"✅ 'ring_guide_ckpt' overridden to: {args.ring_guide_ckpt}")
+        override_count += 1
+    # ++++++++++++++++++++++++++++
     
     if override_count == 0:
         print("No parameters overridden, using all values from the loaded args file.")
@@ -277,7 +290,7 @@ if __name__ == '__main__':
     print(f"✅ Sampler type set to: {args.sampler_type}")
     if args.sampler_type == 'ddim':
         print(f"✅ DDIM steps set to: {args.ddim_steps}")
-    # ---------------------------------------------
+    # ---------------------------------------------    
 
     # 6. 使用最终确定的参数运行主函数
     main(args)
