@@ -13,17 +13,19 @@ BOND_TYPE_MAP = {
     0: Chem.rdchem.BondType.SINGLE,
     1: Chem.rdchem.BondType.DOUBLE,
     2: Chem.rdchem.BondType.TRIPLE,
-    3: Chem.rdchem.BondType.AROMATIC
 }
 ABSORBING_ATOM_TYPE_INDEX = 5
-NO_BOND_EDGE_TYPE_INDEX = 4
+NO_BOND_EDGE_TYPE_INDEX = 3
 
 # --- 2. 核心辅助函数 ---
 
 def pyg_to_rdkit_mol(pyg_data):
     """
-    将单个 PyG Data 对象转换为 RDKit Mol 对象。
-    如果分子无效 (无法转换或通过化学检查)，则返回 None。
+    将单个 PyG Data 对象 (包含显式氢) 转换为 RDKit Mol 对象。
+    此版本执行最严格的检查：
+    1. 禁用隐式氢推断。
+    2. 检查基本化学结构规则 (SanitizeMol)。
+    3. 检查并拒绝任何包含自由基的分子。
     """
     try:
         mol = Chem.RWMol()
@@ -35,6 +37,7 @@ def pyg_to_rdkit_mol(pyg_data):
             if atom_idx != ABSORBING_ATOM_TYPE_INDEX:
                 atom_symbol = ATOM_MAP[atom_idx]
                 rdkit_atom = Chem.Atom(atom_symbol)
+                rdkit_atom.SetNoImplicit(True)
                 new_idx = mol.AddAtom(rdkit_atom)
                 node_map[i] = new_idx
 
@@ -57,7 +60,23 @@ def pyg_to_rdkit_mol(pyg_data):
                         mol.AddBond(rdkit_u, rdkit_v, bond_type)
 
         final_mol = mol.GetMol()
-        Chem.SanitizeMol(final_mol) # 关键的化学正确性检查
+        Chem.SanitizeMol(final_mol)
+        
+        # --- 新增的严格稳定性检查：过滤自由基 ---
+        # 遍历分子中的每一个原子
+        for atom in final_mol.GetAtoms():
+            # GetNumRadicalElectrons() 返回未成对电子的数量
+            # 如果任何一个原子有未成对电子，那么这个分子就是自由基，我们拒绝它。
+            if atom.GetNumRadicalElectrons() != 0:
+                return None
+        # ----------------------------------------
+
+        # (可选但推荐) 过滤掉单个原子或不连通的片段
+        if final_mol.GetNumAtoms() < 2:
+            return None
+        if len(rdmolops.GetMolFrags(final_mol)) > 1:
+            return None
+            
         return final_mol
 
     except Exception:
@@ -156,11 +175,11 @@ def evaluate_and_save_molecules(generated_mols_list, training_mols_list, output_
 if __name__ == '__main__':
     # --- 用户配置区 ---
     # 输入文件
-    TRAINING_DATASET_PATH = 'gdb9_pyg_dataset_fully_connected.pt'
-    GENERATED_MOLECULES_PATH = 'generated_molecules_from_best_model.pkl'
+    TRAINING_DATASET_PATH = 'src/data/gdb9_pyg_dataset_fc_no_aromatic_removed.pt'
+    GENERATED_MOLECULES_PATH = 'output/2025-10-14_09-55-37/generated_pyg/generated_molecules_from_best_model.pkl'
     
     # 输出目录
-    OUTPUT_DIRECTORY_FOR_VALID_MOLS = 'valid_molecules_output'
+    OUTPUT_DIRECTORY_FOR_VALID_MOLS = 'output/2025-10-14_09-55-37/valid_molecules_output'
     
     # --- 脚本执行区 ---
     print("--- 开始执行分子评估与保存脚本 ---")
