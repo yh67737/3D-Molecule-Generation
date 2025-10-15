@@ -411,7 +411,15 @@ class InputEmbeddingLayer(nn.Module):
 
         # 为节点特征添加位置编码
         # 为批处理中的每个图生成从0开始的原子索引
-        num_atoms_per_graph = torch.bincount(data.batch)
+        if data.batch is not None:
+            # 这是批处理的情况 (例如，在训练期间)
+            num_atoms_per_graph = torch.bincount(data.batch)
+        else:
+            # 这是单个图的情况 (例如，在生成/推理期间)
+            # 我们需要手动创建一个张量，使其格式与 bincount 的输出一致
+            # 并且确保它在正确的设备上
+            device = data.x.device if hasattr(data, 'x') and data.x is not None else 'cpu' # 确保设备正确
+            num_atoms_per_graph = torch.tensor([data.num_nodes], device=device)
         atom_indices = torch.cat([torch.arange(n) for n in num_atoms_per_graph]).to(data.pos.device)
 
         # 获取位置编码

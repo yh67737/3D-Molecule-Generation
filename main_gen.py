@@ -209,29 +209,43 @@ if __name__ == '__main__':
     # 2. 添加你想从命令行控制的参数
     #    - 首先，让参数文件的路径本身变成一个参数，这样更灵活！
     parser.add_argument('--args_path', type=str, 
-                        default='./saved_args/args_2025-09-16_14-50-27.pt', 
+                        default='./saved_args/args_2025-10-14_09-55-37.pt', 
                         help='Path to the saved arguments .pt file')
     
     #    - 模型路径
     parser.add_argument('--model_ckpt', type=str, 
-                        default='./output/2025-09-16_14-50-27/checkpoints/checkpoint_epoch_20.pth',
+                        default='./output/2025-10-14_09-55-37/checkpoints/best_model.pth',
                         help='Override the model checkpoint path from the args file.')
 
     #    - 生成分子的最大原子数 (default=None)
     parser.add_argument('--max_atoms', type=int, 
-                        default=30, 
+                        default=50, 
                         help='(Optional) Override the maximum number of atoms per molecule.')
     
     #    - 生成分子的最小原子数 (default=None)
     parser.add_argument('--min_atoms', type=int, 
-                        default=5, 
+                        default=1, 
                         help='(Optional) Override the minimum number of atoms before stopping.')
 
     #    - 要生成的分子总数 (default=None)
     parser.add_argument('--num_generate', type=int, 
-                        default=3, 
+                        default=100, 
                         help='(Optional) Override the total number of molecules to generate.')
     # --------------------------------
+
+    # --- ✅ 新增 DDIM 参数 ---
+    parser.add_argument('--sampler_type', type=str, default='ddim', choices=['ddpm', 'ddim'],
+                        help="Sampler to use for generation ('ddpm' or 'ddim').")
+    parser.add_argument('--ddim_steps_T2', type=int, default=18,
+                        help="Number of T2 steps for DDIM sampler. Ignored if sampler_type is 'ddpm'.")
+    parser.add_argument('--ddim_steps_T1', type=int, default=2,
+                        help="Number of T1 steps for DDIM sampler. Ignored if sampler_type is 'ddpm'.")
+    # --------------------------------
+
+    # +++ 在这里添加新的参数 +++
+    parser.add_argument('--ring_guide_ckpt', type=str, default='./src/models/ring_network/ring_predictor_epoch_10.pt',
+                        help='(Optional) Override the ring guide model checkpoint path.')
+    # ++++++++++++++++++++++++++
 
     # 3. 解析来自命令行的参数
     cli_args = parser.parse_args()
@@ -261,9 +275,26 @@ if __name__ == '__main__':
         args.num_generate = cli_args.num_generate
         print(f"✅ 'num_generate' overridden to: {args.num_generate}")
         override_count += 1
+
+    # +++ 在这里添加新的覆盖逻辑 +++
+    if cli_args.ring_guide_ckpt is not None:
+        args.ring_guide_ckpt = cli_args.ring_guide_ckpt
+        print(f"✅ 'ring_guide_ckpt' overridden to: {args.ring_guide_ckpt}")
+        override_count += 1
+    # ++++++++++++++++++++++++++++
     
     if override_count == 0:
         print("No parameters overridden, using all values from the loaded args file.")
+
+    # --- ✅ 将新的采样器参数也添加到 args 对象中 ---
+    args.sampler_type = cli_args.sampler_type
+    args.ddim_steps_T2 = cli_args.ddim_steps_T2
+    args.ddim_steps_T1 = cli_args.ddim_steps_T1
+    print(f"✅ Sampler type set to: {args.sampler_type}")
+    if args.sampler_type == 'ddim':
+        print(f"✅ DDIM T2 steps set to: {args.ddim_steps_T2}")
+        print(f"✅ DDIM T1 steps set to: {args.ddim_steps_T1}")
+    # ---------------------------------------------    
 
     # 6. 使用最终确定的参数运行主函数
     main(args)

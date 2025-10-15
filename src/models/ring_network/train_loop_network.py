@@ -11,7 +11,7 @@ from torch_geometric.loader import DataLoader
 from torch_geometric.nn import GATConv
 from sklearn.metrics import accuracy_score
 from tqdm import tqdm
-from egnn_new import EGNN 
+from .egnn_new import EGNN 
 
 # --- RingPredictor 模型定义 (保持不变) ---
 class RingPredictor(torch.nn.Module):
