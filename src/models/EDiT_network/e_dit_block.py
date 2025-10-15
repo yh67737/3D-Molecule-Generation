@@ -136,10 +136,7 @@ class E_DiT_Block(torch.nn.Module):
         self.pos_updater = EquivariantPosUpdate(
             irreps_node_in=self.irreps_node_output, 
             irreps_edge_in=self.irreps_edge_output, 
-            time_embedding_dim=time_embedding_dim,
-            number_of_basis=number_of_basis,
-            max_radius=max_radius,
-            fc_neurons=fc_neurons
+            time_embedding_dim=time_embedding_dim
         )
 
         # 共享路径失活模块：该模块模块无参数、无状态，创建一次和两个效果一样
