@@ -229,7 +229,7 @@ if __name__ == '__main__':
 
     #    - 要生成的分子总数 (default=None)
     parser.add_argument('--num_generate', type=int, 
-                        default=100, 
+                        default=5, 
                         help='(Optional) Override the total number of molecules to generate.')
     # --------------------------------
 

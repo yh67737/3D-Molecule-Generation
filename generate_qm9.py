@@ -173,6 +173,71 @@ def check_connectivity(new_atom_idx: int, fragment: Data) -> bool:
 
 
 # ==============================================================================
+# <<<<<<<<<<<<<<<<< 新增代码 START: 打印辅助函数 >>>>>>>>>>>>>>>>>
+# ==============================================================================
+def print_denoising_step_details(
+    phase,
+    step_idx,
+    t_current,
+    t_prev,
+    pos,
+    atom_types_one_hot,
+    edge_index,
+    edge_attrs_one_hot,
+    ATOM_MAP,
+    BOND_MAP,
+    node_indices=None
+):
+    """
+    一个辅助函数，用于在每个去噪步骤后打印预测的分子状态。
+    """
+    # 打印标题，包含阶段、步骤和时间信息
+    print(f"\n      >> [去噪步骤详情] {phase} | 步骤 {step_idx+1:02d} | 时间步 t: {t_current} -> {t_prev}")
+
+    # 1. 打印原子信息 (坐标和类型)
+    atom_type_indices = atom_types_one_hot.argmax(dim=-1)
+    print("         - 预测的原子:")
+    if pos.shape[0] == 0:
+        print("           (无原子信息)")
+    for i in range(pos.shape[0]):
+        # 获取原子的全局索引，如果提供了node_indices
+        node_id = node_indices[i].item() if node_indices is not None else i
+        atom_symbol = ATOM_MAP[atom_type_indices[i].item()]
+        coords = pos[i].cpu().numpy()
+        print(f"           - 原子 {node_id}: 类型='{atom_symbol}', 坐标=[{coords[0]:>8.4f}, {coords[1]:>8.4f}, {coords[2]:>8.4f}]")
+
+    # 2. 打印边信息 (连接关系和类型)
+    print("         - 预测的连接:")
+    if edge_index is None or edge_index.shape[1] == 0:
+        print("           (无边信息)")
+        return
+
+    bond_type_indices = edge_attrs_one_hot.argmax(dim=-1)
+    # 使用一个集合来避免重复打印对称的边 (e.g., 0->1 and 1->0)
+    printed_edges = set()
+    for i in range(edge_index.shape[1]):
+        u, v = edge_index[0, i].item(), edge_index[1, i].item()
+
+        # 规范化边的表示，使得 u < v
+        edge_tuple = tuple(sorted((u, v)))
+
+        if edge_tuple in printed_edges:
+            continue
+
+        bond_symbol = BOND_MAP[bond_type_indices[i].item()]
+        # 我们不打印 "No Bond" 以减少冗余信息
+        if bond_symbol != 'No Bond':
+            print(f"           - 边 {u} <--> {v}: 类型='{bond_symbol}'")
+            printed_edges.add(edge_tuple)
+
+    if not printed_edges:
+         print("           (所有预测的连接均为 'No Bond')")
+# ==============================================================================
+# <<<<<<<<<<<<<<<<< 新增代码 END >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+# ==============================================================================
+
+
+# ==============================================================================
 # 主生成函数
 # ==============================================================================
 @torch.no_grad()
@@ -454,6 +519,27 @@ def generate_molecule(
                 t_prev_val=t_prev_val,
                 schedule_type='delta'
             )
+
+            # ==============================================================================
+            # <<<<<<<<<<<<<<<<< 新增代码 START: 打印阶段一每步结果 >>>>>>>>>>>>>>>>>
+            # ==============================================================================
+            # 在更新数据之前，打印这一步的预测结果
+            print_denoising_step_details(
+                phase="阶段一",
+                step_idx=i,
+                t_current=t_current_val,
+                t_prev=t_prev_val,
+                pos=pos_t_minus_1,
+                atom_types_one_hot=atom_type_t_minus_1,
+                edge_index=denoising_data.edge_index[:, target_edge_mask],
+                edge_attrs_one_hot=bond_attr_t_minus_1_subset,
+                ATOM_MAP=ATOM_MAP,
+                BOND_MAP=BOND_MAP,
+                node_indices=torch.where(target_node_mask)[0] # 传递被更新节点的全局索引
+            )
+            # ==============================================================================
+            # <<<<<<<<<<<<<<<<< 新增代码 END >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+            # ==============================================================================
             
             # c. 更新 denoising_data 的目标部分
             denoising_data.pos[target_node_mask] = pos_t_minus_1
@@ -619,6 +705,27 @@ def generate_molecule(
                 t_prev_val=t_prev_val,
                 schedule_type='alpha'
             )
+
+            # ==============================================================================
+            # <<<<<<<<<<<<<<<<< 新增代码 START: 打印阶段二每步结果 >>>>>>>>>>>>>>>>>
+            # ==============================================================================
+            # 打印这一步的全局预测结果
+            print_denoising_step_details(
+                phase="阶段二",
+                step_idx=i,
+                t_current=t_current_val,
+                t_prev=t_prev_val,
+                pos=fragment.pos,
+                atom_types_one_hot=fragment.x,
+                edge_index=fragment.edge_index,
+                edge_attrs_one_hot=fragment.edge_attr,
+                ATOM_MAP=ATOM_MAP,
+                BOND_MAP=BOND_MAP
+                # 此处 node_indices 为 None，因为我们更新并打印整个图
+            )
+            # ==============================================================================
+            # <<<<<<<<<<<<<<<<< 新增代码 END >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+            # ==============================================================================
 
         print(f"  -> [坐标] 阶段二微调后 (中心化前): Shape={fragment.pos.shape}\n{fragment.pos}")
 
