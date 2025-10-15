@@ -3,40 +3,7 @@ import torch.nn as nn
 from e3nn import o3
 from torch_scatter import scatter_sum
 from .layer_norm import AdaEquiLayerNorm
-from .tensor_product_rescale import LinearRS, TensorProductRescale, sort_irreps_even_first
-from .radial_func import RadialProfile
-from .input_embedding import GaussianRadialBasisLayer
-
-_RESCALE = True
-
-def DepthwiseTensorProduct(irreps_node_input, irreps_edge_attr, irreps_node_output, 
-    internal_weights=False, bias=True):
-    '''
-        The irreps of output is pre-determined. 
-        `irreps_node_output` is used to get certain types of vectors.
-    '''
-    irreps_output = []
-    instructions = []
-    
-    for i, (mul, ir_in) in enumerate(irreps_node_input):
-        for j, (_, ir_edge) in enumerate(irreps_edge_attr):
-            if i == j:
-                for ir_out in ir_in * ir_edge:
-                    if ir_out in irreps_node_output or ir_out == o3.Irrep(0, 1):
-                        k = len(irreps_output)
-                        irreps_output.append((mul, ir_out))
-                        instructions.append((i, j, k, 'uvu', True))
-        
-    irreps_output = o3.Irreps(irreps_output)
-    irreps_output, p, _ = sort_irreps_even_first(irreps_output) #irreps_output.sort()
-    instructions = [(i_1, i_2, p[i_out], mode, train)
-        for i_1, i_2, i_out, mode, train in instructions]
-    tp = TensorProductRescale(irreps_node_input, irreps_edge_attr,
-            irreps_output, instructions,
-            internal_weights=internal_weights,
-            shared_weights=internal_weights,
-            bias=bias, rescale=_RESCALE)
-    return tp
+from .tensor_product_rescale import FullyConnectedTensorProductRescale, LinearRS
 
 #等变的坐标更新模块，模仿Moldiff的BondFFN+PosUpdate，将BondFFN的代码融入PosUpdate结构中
 class EquivariantPosUpdate(nn.Module):
@@ -44,10 +11,7 @@ class EquivariantPosUpdate(nn.Module):
     def __init__(self, 
                  irreps_node_in: str, 
                  irreps_edge_in: str, 
-                 time_embedding_dim: int,
-                 number_of_basis: int,
-                 max_radius: float, 
-                 fc_neurons: list,
+                 time_embedding_dim: int = 128,
                  hidden_irreps: str = '128x0e+64x1e+32x2e'):
         """
         Args:
@@ -63,10 +27,6 @@ class EquivariantPosUpdate(nn.Module):
         irreps_edge_in = o3.Irreps(irreps_edge_in)
         hidden_irreps = o3.Irreps(hidden_irreps)
         
-        # 定义RBF层和径向函数网络的输入维度
-        self.rbf = GaussianRadialBasisLayer(number_of_basis, cutoff=max_radius)
-        radial_hidden_dim = [number_of_basis] + fc_neurons
-        
         # 准备节点特征
         # 定义两个独立的线性层，用于分别变换源节点和目标节点特征
         self.src_node_transform = LinearRS(irreps_node_in, irreps_edge_in)
@@ -75,36 +35,32 @@ class EquivariantPosUpdate(nn.Module):
         # 预测每条边的标量权重
         
         # a.融合两端节点特征：使用FCTP
-        self.node_fusion_tp = DepthwiseTensorProduct(
-            irreps_node_input=irreps_edge_in, 
-            irreps_edge_attr=irreps_edge_in, 
-            irreps_node_output=irreps_edge_in
+        self.node_fusion_tp = FullyConnectedTensorProductRescale(
+            irreps_in1=irreps_edge_in, 
+            irreps_in2=irreps_edge_in, 
+            irreps_out=irreps_edge_in
         )
-        # node_fusion_tp配套的径向网络
-        self.node_fusion_rad = RadialProfile(radial_hidden_dim + [self.node_fusion_tp.tp.weight_numel])
 
         # b.将融合后的节点、初始边特征映射到隐藏维度
-        self.node_transform = LinearRS(self.node_fusion_tp.irreps_out, hidden_irreps)
+        self.node_transform = LinearRS(irreps_edge_in, hidden_irreps)
         self.edge_transform = LinearRS(irreps_edge_in, hidden_irreps)
         
         # c.融合节点和边特征
-        self.edge_fusion_tp = DepthwiseTensorProduct(
-            irreps_node_input=hidden_irreps,
-            irreps_edge_attr=hidden_irreps,
-            irreps_node_output=hidden_irreps
+        self.edge_fusion_tp = FullyConnectedTensorProductRescale(
+            irreps_in1=hidden_irreps, 
+            irreps_in2=hidden_irreps, 
+            irreps_out=hidden_irreps
         )
-        # edge_fusion_tp配套的径向网络
-        self.edge_fusion_rad = RadialProfile(radial_hidden_dim + [self.edge_fusion_tp.tp.weight_numel])
 
         # d.层归一化引入时间特征 (遵循Pre-Norm架构)
         self.norm = AdaEquiLayerNorm(
-            irreps=self.edge_fusion_tp.irreps_out, 
+            irreps=hidden_irreps, 
             time_embedding_dim=time_embedding_dim
         )
         
         # e.将归一化后的特征映射为最终的标量权重，输出为'1x0e'
         self.scalar_predictor = nn.Sequential(
-            LinearRS(self.edge_fusion_tp.irreps_out, o3.Irreps('32x0e')), # 先映射到一个中间标量维度
+            LinearRS(hidden_irreps, o3.Irreps('32x0e')), # 先映射到一个中间标量维度
             nn.SiLU(),
             LinearRS(o3.Irreps('32x0e'), o3.Irreps('1x0e'))  # 再映射到最终的1x0e
         )
@@ -134,26 +90,23 @@ class EquivariantPosUpdate(nn.Module):
         # 从边索引中分离出源节点(左)和目标节点(右)
         edge_src, edge_dst = edge_index
 
-        # 通过RBF和RadialProfile生成DTP权重
-        edge_scalars = self.rbf(distance)
-        weight_node_fusion = self.node_fusion_rad(edge_scalars)
-        weight_edge_fusion = self.edge_fusion_rad(edge_scalars)
-
         # 准备节点特征
         src_feat = self.src_node_transform(h_node[edge_src])
         dst_feat = self.dst_node_transform(h_node[edge_dst])
 
         # 预测每条边的标量权重
-        fused_nodes = self.node_fusion_tp(src_feat, dst_feat, weight=weight_node_fusion)
+        fused_nodes = self.node_fusion_tp(src_feat, dst_feat)
         fused_nodes_trans = self.node_transform(fused_nodes)
         edge_trans = self.edge_transform(h_edge)
-        fused_all = self.edge_fusion_tp(fused_nodes_trans, edge_trans, weight=weight_edge_fusion)
-
+        fused_all = self.edge_fusion_tp(fused_nodes_trans, edge_trans)
         batch_edge = batch[edge_src] # 为边特征分配对应的批次索引
         normalized_feat = self.norm(fused_all, t, batch_edge)   
         scalar_weight = self.scalar_predictor(normalized_feat) # shape: [num_edges, 1]
 
         # 计算力向量 (force_edge)
+        # relative_vec = pos[edge_src] - pos[edge_dst]
+        # distance = torch.norm(relative_vec, dim=-1, keepdim=True).clamp(min=1e-8)
+        # 将 distance 临时扩展为 [num_edges, 1] 以进行正确的广播
         distance_2d = distance.unsqueeze(-1)
         force_edge = scalar_weight * (relative_vec / distance_2d) / (distance_2d + 1.0)
 

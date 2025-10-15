@@ -94,7 +94,7 @@ def get_args_parser():
                         help="断点加载参数路径 (Path to checkpoint to resume training from)")
 
     # 训练流程
-    parser.add_argument('--epochs', type=int, default=500, help='Total number of training epochs')
+    parser.add_argument('--epochs', type=int, default=150, help='Total number of training epochs')
     parser.add_argument('--learning_rate', type=float, default=1e-4, help='Learning rate for the Adam optimizer(model)')
     parser.add_argument('--lr_min_factor', type=float, default=0.001, 
                     help="学习率下限因子，最终学习率 = lr_min_factor × 初始学习率")
@@ -133,35 +133,35 @@ def get_args_parser():
                         help='Directory containing some JSON fragment files.')  ###
     # parser.add_argument('--fragment_data_dir', type=str, default='./prepared_data/gdb9_bfs_fragments_json', help='Directory containing the JSON fragment files.')
     parser.add_argument('--val_split_percentage', type=float, default=0.1, help='Percentage of data to use for validation.')
-    parser.add_argument('--train_batch_size', type=int, default=16)
-    parser.add_argument('--val_batch_size', type=int, default=16)
-    parser.add_argument('--batch_ratio_val', type=int, default=50, help='Ratio to determine number of validation samples (num_val_samples = batch_size * batch_ratio)')
-    parser.add_argument('--batch_ratio_train', type=int, default=500, help='Ratio to determine number of training samples per epoch (num_train_samples = batch_size * batch_ratio)')
+    parser.add_argument('--train_batch_size', type=int, default=32)
+    parser.add_argument('--val_batch_size', type=int, default=32)
+    parser.add_argument('--batch_ratio_val', type=int, default=25, help='Ratio to determine number of validation samples (num_val_samples = batch_size * batch_ratio)')
+    parser.add_argument('--batch_ratio_train', type=int, default=250, help='Ratio to determine number of training samples per epoch (num_train_samples = batch_size * batch_ratio)')
     parser.add_argument('--num_workers', type=int, default=4)
     parser.add_argument('--accumulation_steps', type=int, default=8)
 
     # E-DiT参数
     # --- 模型架构参数 (Model Architecture) ---
     g_arch = parser.add_argument_group('Architecture')
-    g_arch.add_argument('--num_blocks', type=int, default=6, help='Number of E-DiT blocks.')
-    g_arch.add_argument('--num_heads', type=int, default=4, help='Number of attention heads.')
+    g_arch.add_argument('--num_blocks', type=int, default=2, help='Number of E-DiT blocks.')
+    g_arch.add_argument('--num_heads', type=int, default=2, help='Number of attention heads.')
     g_arch.add_argument('--norm_layer', type=str, default='layer', help='Type of normalization layer (e.g., "layer").')
-    g_arch.add_argument('--time_embed_dim', type=int, default=64, help='Dimension of timestep embedding.')
+    g_arch.add_argument('--time_embed_dim', type=int, default=32, help='Dimension of timestep embedding.')
 
     # --- Irreps 参数 (Irreps Definitions) ---
     g_irreps = parser.add_argument_group('Irreps')
-    g_irreps.add_argument('--irreps_node_hidden', type=str, default='32x0e+16x1o+8x2e',
+    g_irreps.add_argument('--irreps_node_hidden', type=str, default='16x0e+8x1o+4x2e',
                           help='Hidden node feature irreps.')
-    g_irreps.add_argument('--irreps_edge', type=str, default='32x0e+16x1o+8x2e', help='Hidden edge feature irreps.')
-    g_irreps.add_argument('--irreps_final_node_feature', type=str, default='128x0e',
+    g_irreps.add_argument('--irreps_edge', type=str, default='16x0e+8x1o+4x2e', help='Hidden edge feature irreps.')
+    g_irreps.add_argument('--irreps_final_node_feature', type=str, default='64x0e',
                           help='Hidden node feature irreps for final block output.')
-    g_irreps.add_argument('--irreps_final_edge_feature', type=str, default='128x0e', help='Hidden edge feature irreps for final block output.')
+    g_irreps.add_argument('--irreps_final_edge_feature', type=str, default='64x0e', help='Hidden edge feature irreps for final block output.')
     g_irreps.add_argument('--irreps_node_attr', type=str, default='6x0e', help='Node attribute (atom type) irreps.')
-    g_irreps.add_argument('--irreps_edge_attr_type', type=str, default='5x0e',
+    g_irreps.add_argument('--irreps_edge_attr_type', type=str, default='4x0e',
                           help='Edge attribute (bond type) irreps.')
     g_irreps.add_argument('--irreps_sh', type=str, default='1x0e+1x1e+1x2e', help='Spherical harmonics irreps.')
-    g_irreps.add_argument('--irreps_head', type=str, default='16x0e+8x1o+4x2e', help='Single attention head irreps.')
-    g_irreps.add_argument('--irreps_mlp_mid', type=str, default='64x0e+32x1o+16x2e',
+    g_irreps.add_argument('--irreps_head', type=str, default='8x0e+4x1o+2x2e', help='Single attention head irreps.')
+    g_irreps.add_argument('--irreps_mlp_mid', type=str, default='32x0e+16x1o+8x2e',
                           help='Irreps for the middle layer of FFN.')
     g_irreps.add_argument('--irreps_pre_attn', type=str, default=None,
                           help='Optional irreps for pre-attention linear layer.')
@@ -169,11 +169,11 @@ def get_args_parser():
     # --- 嵌入层参数 (Embedding Layers) ---
     g_embed = parser.add_argument_group('Embeddings')
     g_embed.add_argument('--num_atom_types', type=int, default=6, help='Number of atom types for embedding.')
-    g_embed.add_argument('--num_bond_types', type=int, default=5, help='Number of bond types for embedding.')
-    g_embed.add_argument('--node_embedding_hidden_dim', type=int, default=64,
+    g_embed.add_argument('--num_bond_types', type=int, default=4, help='Number of bond types for embedding.')
+    g_embed.add_argument('--node_embedding_hidden_dim', type=int, default=32,
                          help='Hidden dimension in node embedding MLP.')
-    g_embed.add_argument('--bond_embedding_dim', type=int, default=64, help='Hidden dimension in edge embedding MLP.')
-    g_embed.add_argument('--edge_update_hidden_dim', type=int, default=64,
+    g_embed.add_argument('--bond_embedding_dim', type=int, default=32, help='Hidden dimension in edge embedding MLP.')
+    g_embed.add_argument('--edge_update_hidden_dim', type=int, default=32,
                          help='Hidden dimension in EdgeUpdateNetwork scalar MLP.')
     g_embed.add_argument('--num_rbf', type=int, default=64, help='Number of radial basis functions.')
     g_embed.add_argument('--rbf_cutoff', type=float, default=1000.0, help='Cutoff radius for RBF.')
