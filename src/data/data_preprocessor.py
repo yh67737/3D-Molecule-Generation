@@ -1,4 +1,3 @@
-# data_preprocessor(no_aromatic&H).py
 import torch
 from torch_geometric.data import Data
 from rdkit import Chem
@@ -23,7 +22,7 @@ def process_gdb9_sdf_kekulize_removeH(sdf_path):
     kekulization_failures = 0
     
     # 定义原子类型
-    atom_types = ['C', 'N', 'O', 'F'] # H原子将被移除
+    atom_types = ['C', 'N', 'O', 'F', 'Abscorbing'] # H原子将被移除
     atom_map = {symbol: i for i, symbol in enumerate(atom_types)}
 
     # 定义键类型，不包含 AROMATIC
@@ -42,17 +41,17 @@ def process_gdb9_sdf_kekulize_removeH(sdf_path):
             continue
 
         # --- 主要修改点 START ---
+        # 1. 去除所有氢原子 (参考MolDiff)
+        # 这一步会返回一个新的分子对象，且原子索引会重新计算
+        mol = Chem.RemoveAllHs(mol)
+        # --- 主要修改点 END ---
+
         try:
-            # 1. 对分子进行Kekulize操作，将芳香键转换为单双键
+            # 2. 对分子进行Kekulize操作，将芳香键转换为单双键
             Chem.Kekulize(mol)
         except Chem.rdchem.KekulizeException:
             kekulization_failures += 1
             continue  # 如果一个分子无法被Kekulize，则跳过
-
-        # 2. 去除所有氢原子 (参考MolDiff)
-        # 这一步会返回一个新的分子对象，且原子索引会重新计算
-        mol = Chem.RemoveAllHs(mol)
-        # --- 主要修改点 END ---
 
         num_atoms = mol.GetNumAtoms()
         if num_atoms == 0:
