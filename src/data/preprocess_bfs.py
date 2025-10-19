@@ -161,7 +161,7 @@ def generate_single_centered_subgraph(graph: Data, order: list) -> Data:
 
 if __name__ == '__main__':
     # 定义输入和输出路径
-    ORIGINAL_DATASET_PATH = 'gdb9_pyg_dataset_fc_no_aromatic_removed.pt'
+    ORIGINAL_DATASET_PATH = 'gdb9_pyg_dataset_kekulized_noH.pt'
     # [修改] 输出文件夹名称，以表明保存的是JSON文件
     PREPROCESSED_DATA_DIR = '../../prepared_data/autodl-tmp/gdb9_unique_subgraphs_json'
     os.makedirs(PREPROCESSED_DATA_DIR, exist_ok=True)
