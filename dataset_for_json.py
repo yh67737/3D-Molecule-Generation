@@ -23,6 +23,11 @@ class JsonFragmentDataset(Dataset):
         )
         if not self.file_paths:
             raise FileNotFoundError(f"No .json files found in the directory: {root_dir}")
+        
+        # --- 定义类别数量为类的属性 ---
+        # 化学键类型数量是 4: 单键、双键、三键、芳香键
+        self.num_bond_classes = 4 
+        # ----------------------------------------------
 
     def __len__(self):
         """Returns the total number of fragments (files)."""
@@ -43,14 +48,18 @@ class JsonFragmentDataset(Dataset):
         with open(file_path, 'r') as f:
             data_dict = json.load(f)
 
+        # 准备 edge_attr 张量，并确保其始终为二维
+        edge_attr_data = data_dict['edge_attr']
+        edge_attr_tensor = torch.tensor(edge_attr_data, dtype=torch.float).view(-1, self.num_bond_classes)   
+
         # Reconstruct the PyGData object from the dictionary
         graph_data = PyGData(
             x=torch.tensor(data_dict['x'], dtype=torch.float),
             edge_index=torch.tensor(data_dict['edge_index'], dtype=torch.long),
-            edge_attr=torch.tensor(data_dict['edge_attr'], dtype=torch.float),
+            edge_attr=edge_attr_tensor,
             pos=torch.tensor(data_dict['pos'], dtype=torch.float),
-            pring_out = torch.tensor(data_dict['pring_out'], dtype=torch.float),
-            is_new_node = torch.tensor(data_dict['is_new_node'], dtype=torch.float)
+            pring_out=torch.tensor(data_dict['pring_out'], dtype=torch.float),
+            is_new_node=torch.tensor(data_dict['is_new_node'], dtype=torch.float)
         )
 
         return graph_data
