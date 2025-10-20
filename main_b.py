@@ -156,7 +156,7 @@ def get_args_parser():
     g_irreps.add_argument('--irreps_final_node_feature', type=str, default='64x0e',
                           help='Hidden node feature irreps for final block output.')
     g_irreps.add_argument('--irreps_final_edge_feature', type=str, default='64x0e', help='Hidden edge feature irreps for final block output.')
-    g_irreps.add_argument('--irreps_node_attr', type=str, default='6x0e', help='Node attribute (atom type) irreps.')
+    g_irreps.add_argument('--irreps_node_attr', type=str, default='5x0e', help='Node attribute (atom type) irreps.')
     g_irreps.add_argument('--irreps_edge_attr_type', type=str, default='4x0e',
                           help='Edge attribute (bond type) irreps.')
     g_irreps.add_argument('--irreps_sh', type=str, default='1x0e+1x1e+1x2e', help='Spherical harmonics irreps.')
@@ -168,7 +168,7 @@ def get_args_parser():
 
     # --- 嵌入层参数 (Embedding Layers) ---
     g_embed = parser.add_argument_group('Embeddings')
-    g_embed.add_argument('--num_atom_types', type=int, default=6, help='Number of atom types for embedding.')
+    g_embed.add_argument('--num_atom_types', type=int, default=5, help='Number of atom types for embedding.')
     g_embed.add_argument('--num_bond_types', type=int, default=4, help='Number of bond types for embedding.')
     g_embed.add_argument('--node_embedding_hidden_dim', type=int, default=32,
                          help='Hidden dimension in node embedding MLP.')
