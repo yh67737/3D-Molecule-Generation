@@ -367,7 +367,7 @@ class GraphAttention(torch.nn.Module):
         irreps_node_input, irreps_node_attr,
         irreps_edge_attr, irreps_node_output,
         fc_neurons,
-        irreps_head, num_heads, irreps_pre_attn=None, 
+        irreps_head, num_heads, irreps_edge, irreps_pre_attn=None,
         rescale_degree=False, nonlinear_message=False,
         alpha_drop=0.1, proj_drop=0.1):
         """
@@ -381,6 +381,7 @@ class GraphAttention(torch.nn.Module):
             fc_neurons (list): 用于径向函数(MLP)的隐藏层维度。
             irreps_head (o3.Irreps): 单个注意力头的Irreps定义。###
             num_heads (int): 注意力头的数量。
+            irreps_edge (o3.Irreps): 边隐藏层的Irreps。
             irreps_pre_attn (o3.Irreps, optional): 预注意力消息的Irreps。默认为输入Irreps。
             rescale_degree (bool, optional): 是否用节点度数对聚合结果进行缩放。
             nonlinear_message (bool, optional): 是否使用非线性消息传递路径。
@@ -405,6 +406,7 @@ class GraphAttention(torch.nn.Module):
         # 通过两个独立的线性层Linear_src和Linear_dst分别处理源节点j和目标节点i的特征
         self.merge_src = LinearRS(self.irreps_node_input, self.irreps_pre_attn, bias=True)
         self.merge_dst = LinearRS(self.irreps_node_input, self.irreps_pre_attn, bias=False)
+        self.merge_edge = LinearRS(self.irreps_edge, self.irreps_pre_attn, bias=False)
         
         # 计算多头注意力所需的Irreps
         irreps_attn_heads = irreps_head * num_heads
@@ -478,7 +480,7 @@ class GraphAttention(torch.nn.Module):
         
         
     def forward(self, node_input, node_attr, edge_src, edge_dst, edge_attr, edge_scalars, 
-        batch, **kwargs):
+        batch, edge_input, **kwargs):
         """
         执行等变图注意力的前向传播。
 
@@ -490,6 +492,7 @@ class GraphAttention(torch.nn.Module):
             edge_attr (torch.Tensor): 边的几何特征 (球谐函数), 形状 [num_edges, irreps_edge_attr.dim]
             edge_scalars (torch.Tensor): 边的标量特征 (RBF), 形状 [num_edges, RBF_dim]
             batch (torch.Tensor): 节点到图的分配索引, 形状 [num_nodes]
+            edge_input (torch.Tensor): 边特征, 形状 [num_edges, irreps_pre_attn.dim]
 
         Returns:
             torch.Tensor: 更新后的节点特征, 形状 [num_nodes, irreps_node_output.dim]
@@ -499,7 +502,8 @@ class GraphAttention(torch.nn.Module):
         # 相加融合源节点和目标节点的特征-x_ij = Linear_dst(x_i) + Linear_src(x_j)
         message_src = self.merge_src(node_input)
         message_dst = self.merge_dst(node_input)
-        message = message_src[edge_src] + message_dst[edge_dst]
+        message_edge = self.merge_edge(edge_input)
+        message = message_src[edge_src] + message_dst[edge_dst] + message_edge
         
         ## 计算Alpha和Value (根据是否使用非线性消息，路径不同)
         # value计算：值v_ij可以是线性的(直接使用f_{ij}的非标量部分），也可以是非线性的(对f_{ij}$进行Gate激活和第二次DTP）
