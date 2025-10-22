@@ -394,6 +394,7 @@ class GraphAttention(torch.nn.Module):
         self.irreps_node_input = o3.Irreps(irreps_node_input)
         self.irreps_node_attr = o3.Irreps(irreps_node_attr)
         self.irreps_edge_attr = o3.Irreps(irreps_edge_attr)
+        self.irreps_edge = o3.Irreps(irreps_edge)
         self.irreps_node_output = o3.Irreps(irreps_node_output)
         self.irreps_pre_attn = self.irreps_node_input if irreps_pre_attn is None \
             else o3.Irreps(irreps_pre_attn)
@@ -407,6 +408,14 @@ class GraphAttention(torch.nn.Module):
         self.merge_src = LinearRS(self.irreps_node_input, self.irreps_pre_attn, bias=True)
         self.merge_dst = LinearRS(self.irreps_node_input, self.irreps_pre_attn, bias=False)
         self.merge_edge = LinearRS(self.irreps_edge, self.irreps_pre_attn, bias=False)
+
+        self.tp_message_gate = FullyConnectedTensorProductRescaleSwishGate(
+            self.irreps_pre_attn,
+            self.irreps_pre_attn,
+            self.irreps_pre_attn,
+            bias=True,
+            rescale=_RESCALE
+        )
         
         # 计算多头注意力所需的Irreps
         irreps_attn_heads = irreps_head * num_heads
@@ -503,7 +512,11 @@ class GraphAttention(torch.nn.Module):
         message_src = self.merge_src(node_input)
         message_dst = self.merge_dst(node_input)
         message_edge = self.merge_edge(edge_input)
-        message = message_src[edge_src] + message_dst[edge_dst] + message_edge
+        node_message = message_src[edge_src] + message_dst[edge_dst]
+
+        # message = message_src[edge_src] + message_dst[edge_dst] + message_edge
+
+        message = self.tp_message_gate(node_message, message_edge)
         
         ## 计算Alpha和Value (根据是否使用非线性消息，路径不同)
         # value计算：值v_ij可以是线性的(直接使用f_{ij}的非标量部分），也可以是非线性的(对f_{ij}$进行Gate激活和第二次DTP）

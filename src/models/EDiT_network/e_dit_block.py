@@ -53,6 +53,7 @@ class E_DiT_Block(torch.nn.Module):
         self.irreps_node_input = o3.Irreps(irreps_node_input)
         self.irreps_node_attr = o3.Irreps(irreps_node_attr)
         self.irreps_edge_attr = o3.Irreps(irreps_edge_attr)
+        self.irreps_edge = o3.Irreps(irreps_edge_input)
         self.irreps_node_output = o3.Irreps(irreps_node_output)
         self.irreps_pre_attn = self.irreps_node_input if irreps_pre_attn is None \
             else o3.Irreps(irreps_pre_attn)
@@ -68,7 +69,8 @@ class E_DiT_Block(torch.nn.Module):
         # 节点更新的核心：图注意力模块
         self.ga = GraphAttention(irreps_node_input=self.irreps_node_input, 
             irreps_node_attr=self.irreps_node_attr,
-            irreps_edge_attr=self.irreps_edge_attr, 
+            irreps_edge_attr=self.irreps_edge_attr,
+            irreps_edge=self.irreps_edge,
             irreps_node_output=self.irreps_node_input,
             fc_neurons=fc_neurons,
             irreps_head=self.irreps_head, 
@@ -189,7 +191,8 @@ class E_DiT_Block(torch.nn.Module):
         # Graph Attention
         node_features = self.ga(
             node_input=node_features, 
-            node_attr=node_attr, 
+            node_attr=node_attr,
+            edge_input=edge_input,
             edge_src=edge_src, edge_dst=edge_dst, 
             edge_attr=edge_attr, edge_scalars=edge_scalars,
             batch=batch)
