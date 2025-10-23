@@ -198,6 +198,9 @@ class E_DiT_Network(nn.Module):
             embedded_inputs['edge_input'] = e
             embedded_inputs['pos'] = pos
 
+            # 将 target_node_mask 添加到传递给 block 的参数字典中
+            embedded_inputs['target_node_mask'] = target_node_mask
+
             # 使用字典解包 ** 来传递所有参数，并单独传递时间步 t
             h, e, pos = block(t=t, **embedded_inputs)
 

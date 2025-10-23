@@ -150,7 +150,7 @@ class E_DiT_Block(torch.nn.Module):
         self.node_ffn_gate = torch.nn.Parameter(torch.tensor([1e-3]))
 
     def forward(self, node_input, node_attr, edge_src, edge_dst,
-                edge_input, edge_attr_type, pos, edge_index, t, batch, **kwargs):
+                edge_input, edge_attr_type, pos, edge_index, t, batch, target_node_mask, **kwargs):
         """
         执行一个E_DiT_Block的前向传播。
 
@@ -276,7 +276,28 @@ class E_DiT_Block(torch.nn.Module):
             batch=batch
         )
 
-        # 得到更新后的坐标
-        pos_output = pos + delta_pos
+        # 在应用更新之前，使用掩码来选择性地更新坐标
+
+        # 1. 创建一个零向量，形状与 delta_pos 相同。
+        #    这将作为不更新的那些节点的“位移”（即位移为0）。
+        final_delta_pos = torch.zeros_like(delta_pos)
+    
+        # 2. 使用 target_node_mask 作为索引，
+        #    只将计算出的 delta_pos 填充到需要更新的节点位置上。
+        final_delta_pos[target_node_mask] = delta_pos[target_node_mask]
+    
+        # 3. 得到更新后的坐标
+        #    现在，只有被掩码标记的节点的坐标会加上非零的位移。
+        pos_output = pos + final_delta_pos
+
+        # 调试打印
+        if target_node_mask.sum() < pos.shape[0]: # 只在策略II（有部分节点不更新时）打印
+            print(f"Masked update check: pos changed? {not torch.allclose(pos, pos_output)}")
+            print(f"Context nodes pos changed? {not torch.allclose(pos[~target_node_mask], pos_output[~target_node_mask])}")
+            print(f"Target nodes pos changed? {not torch.allclose(pos[target_node_mask], pos_output[target_node_mask])}")
+            # 期望输出:
+            # Masked update check: pos changed? True
+            # Context nodes pos changed? False  <-- 关键！
+            # Target nodes pos changed? True
         
         return node_output, edge_output, pos_output
