@@ -290,14 +290,14 @@ class E_DiT_Block(torch.nn.Module):
         #    现在，只有被掩码标记的节点的坐标会加上非零的位移。
         pos_output = pos + final_delta_pos
 
-        # 调试打印
-        if target_node_mask.sum() < pos.shape[0]: # 只在策略II（有部分节点不更新时）打印
-            print(f"Masked update check: pos changed? {not torch.allclose(pos, pos_output)}")
-            print(f"Context nodes pos changed? {not torch.allclose(pos[~target_node_mask], pos_output[~target_node_mask])}")
-            print(f"Target nodes pos changed? {not torch.allclose(pos[target_node_mask], pos_output[target_node_mask])}")
-            # 期望输出:
-            # Masked update check: pos changed? True
-            # Context nodes pos changed? False  <-- 关键！
-            # Target nodes pos changed? True
+        # # 调试打印
+        # if target_node_mask.sum() < pos.shape[0]: # 只在策略II（有部分节点不更新时）打印
+        #     print(f"Masked update check: pos changed? {not torch.allclose(pos, pos_output)}")
+        #     print(f"Context nodes pos changed? {not torch.allclose(pos[~target_node_mask], pos_output[~target_node_mask])}")
+        #     print(f"Target nodes pos changed? {not torch.allclose(pos[target_node_mask], pos_output[target_node_mask])}")
+        #     # 期望输出:
+        #     # Masked update check: pos changed? True
+        #     # Context nodes pos changed? False  <-- 关键！
+        #     # Target nodes pos changed? True
         
         return node_output, edge_output, pos_output
