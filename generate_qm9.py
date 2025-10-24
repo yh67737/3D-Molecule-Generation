@@ -752,11 +752,11 @@ def generate_molecule(
             # 终止前，移除最后一个未连接的原子
             # (这是一个可选的清理步骤)
             # --- 关键修改：添加 device 参数 ---
-            # final_mask = torch.ones(fragment.num_nodes, 
-            #                         dtype=torch.bool, 
-            #                         device=fragment.x.device) # <-- 和 fragment 在同一设备上
-            # final_mask[new_atom_idx] = False
-            # fragment = fragment.subgraph(final_mask)
+            final_mask = torch.ones(fragment.num_nodes, 
+                                    dtype=torch.bool, 
+                                    device=fragment.x.device) # <-- 和 fragment 在同一设备上
+            final_mask[new_atom_idx] = False
+            fragment = fragment.subgraph(final_mask)
             break
             
     print("\n--- 分子生成完成 ---")
