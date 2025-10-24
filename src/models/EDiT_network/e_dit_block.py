@@ -150,7 +150,7 @@ class E_DiT_Block(torch.nn.Module):
         self.node_ffn_gate = torch.nn.Parameter(torch.tensor([1e-3]))
 
     def forward(self, node_input, node_attr, edge_src, edge_dst,
-                edge_input, edge_attr_type, pos, edge_index, t, batch, target_node_mask, **kwargs):
+                edge_input, edge_attr_type, pos, edge_index, t, batch, target_node_mask, target_edge_mask, **kwargs):
         """
         执行一个E_DiT_Block的前向传播。
 
@@ -202,7 +202,10 @@ class E_DiT_Block(torch.nn.Module):
         if self.drop_path is not None:
             node_features = self.drop_path(node_features, batch)
         # 第一次残差连接
-        node_output = node_output + node_features
+        # 第一次残差连接 (应用掩码)
+        node_update_amount_1 = torch.zeros_like(node_features)
+        node_update_amount_1[target_node_mask] = node_features[target_node_mask]
+        node_output = node_output + node_update_amount_1
         
         node_features = node_output
         # Pre-Normalization
@@ -219,7 +222,10 @@ class E_DiT_Block(torch.nn.Module):
         if self.drop_path is not None:
             node_features = self.drop_path(node_features, batch)
         # 第二次残差连接
-        node_output = node_output + node_features
+        # 第二次残差连接 (应用掩码)
+        node_update_amount_2 = torch.zeros_like(node_features)
+        node_update_amount_2[target_node_mask] = node_features[target_node_mask]
+        node_output = node_output + node_update_amount_2
 
         # 边更新路径 (Edge Update Path)
         edge_output = edge_input.clone()
@@ -244,7 +250,10 @@ class E_DiT_Block(torch.nn.Module):
         if self.drop_path is not None:
             edge_update_amount = self.drop_path(edge_update_amount, edge_batch)
         # 第一次残差连接
-        edge_output = edge_output + edge_update_amount
+        # 第一次残差连接 (应用掩码)
+        edge_update_amount_1_masked = torch.zeros_like(edge_update_amount)
+        edge_update_amount_1_masked[target_edge_mask] = edge_update_amount[target_edge_mask]
+        edge_output = edge_output + edge_update_amount_1_masked
 
         # 第二个残差分支(FFN)
         edge_features = edge_output
@@ -261,7 +270,9 @@ class E_DiT_Block(torch.nn.Module):
         if self.drop_path is not None:
             ffn_output = self.drop_path(ffn_output, edge_batch)
         # 第二次残差连接
-        edge_output = edge_output + ffn_output
+        ffn_output_masked = torch.zeros_like(ffn_output)
+        ffn_output_masked[target_edge_mask] = ffn_output[target_edge_mask]
+        edge_output = edge_output + ffn_output_masked
 
         # 坐标更新路径 (Position Update Path)
         # 调用坐标更新模块
