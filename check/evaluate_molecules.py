@@ -8,7 +8,7 @@ from rdkit import Chem
 from rdkit.Chem import rdmolops
 
 # --- 1. 配置和全局映射 (保持不变) ---
-ATOM_MAP = ['H', 'C', 'N', 'O', 'F']
+ATOM_MAP = ['C', 'N', 'O', 'F']
 BOND_TYPE_MAP = {
     0: Chem.rdchem.BondType.SINGLE,
     1: Chem.rdchem.BondType.DOUBLE,
@@ -37,7 +37,7 @@ def pyg_to_rdkit_mol(pyg_data):
             if atom_idx != ABSORBING_ATOM_TYPE_INDEX:
                 atom_symbol = ATOM_MAP[atom_idx]
                 rdkit_atom = Chem.Atom(atom_symbol)
-                rdkit_atom.SetNoImplicit(True)
+                # rdkit_atom.SetNoImplicit(True)
                 new_idx = mol.AddAtom(rdkit_atom)
                 node_map[i] = new_idx
 
@@ -72,10 +72,10 @@ def pyg_to_rdkit_mol(pyg_data):
         # ----------------------------------------
 
         # (可选但推荐) 过滤掉单个原子或不连通的片段
-        if final_mol.GetNumAtoms() < 2:
-            return None
-        if len(rdmolops.GetMolFrags(final_mol)) > 1:
-            return None
+        # if final_mol.GetNumAtoms() < 2:
+        #     return None
+        # if len(rdmolops.GetMolFrags(final_mol)) > 1:
+        #     return None
             
         return final_mol
 
@@ -175,11 +175,11 @@ def evaluate_and_save_molecules(generated_mols_list, training_mols_list, output_
 if __name__ == '__main__':
     # --- 用户配置区 ---
     # 输入文件
-    TRAINING_DATASET_PATH = 'src/data/gdb9_pyg_dataset_fc_no_aromatic_removed.pt'
-    GENERATED_MOLECULES_PATH = 'output/2025-10-15_09-01-50/generated_pyg/generated_molecules_from_best_model.pkl'
+    TRAINING_DATASET_PATH = 'src/data/gdb9_pyg_dataset_kekulized_noH.pt'
+    GENERATED_MOLECULES_PATH = 'output/2025-10-23_16-01-36/generated_pyg/generated_molecules_from_best_model.pkl'
     
     # 输出目录
-    OUTPUT_DIRECTORY_FOR_VALID_MOLS = 'output/2025-10-15_09-01-50/valid_molecules_output'
+    OUTPUT_DIRECTORY_FOR_VALID_MOLS = 'output/2025-10-23_16-01-36/valid_molecules_output'
     
     # --- 脚本执行区 ---
     print("--- 开始执行分子评估与保存脚本 ---")

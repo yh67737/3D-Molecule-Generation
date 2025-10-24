@@ -143,14 +143,14 @@ class E_DiT_Block(torch.nn.Module):
 
         # 共享路径失活模块：该模块模块无参数、无状态，创建一次和两个效果一样
         self.drop_path = GraphDropPath(drop_path_rate) if drop_path_rate > 0. else None
-        self.edge_updater_gate = torch.nn.Parameter(torch.tensor([1e-3]))
-        self.edge_ffn_gate = torch.nn.Parameter(torch.tensor([1e-3]))
+        self.edge_updater_gate = torch.nn.Parameter(torch.tensor([1.0]))
+        self.edge_ffn_gate = torch.nn.Parameter(torch.tensor([1.0]))
 
-        self.node_ga_gate = torch.nn.Parameter(torch.tensor([1e-3]))
-        self.node_ffn_gate = torch.nn.Parameter(torch.tensor([1e-3]))
+        self.node_ga_gate = torch.nn.Parameter(torch.tensor([1.0]))
+        self.node_ffn_gate = torch.nn.Parameter(torch.tensor([1.0]))
 
     def forward(self, node_input, node_attr, edge_src, edge_dst,
-                edge_input, edge_attr_type, pos, edge_index, t, batch, **kwargs):
+                edge_input, edge_attr_type, pos, edge_index, t, batch, target_node_mask, target_edge_mask, **kwargs):
         """
         执行一个E_DiT_Block的前向传播。
 
@@ -202,7 +202,10 @@ class E_DiT_Block(torch.nn.Module):
         if self.drop_path is not None:
             node_features = self.drop_path(node_features, batch)
         # 第一次残差连接
-        node_output = node_output + node_features
+        # 第一次残差连接 (应用掩码)
+        node_update_amount_1 = torch.zeros_like(node_features)
+        node_update_amount_1[target_node_mask] = node_features[target_node_mask]
+        node_output = node_output + node_update_amount_1
         
         node_features = node_output
         # Pre-Normalization
@@ -219,7 +222,10 @@ class E_DiT_Block(torch.nn.Module):
         if self.drop_path is not None:
             node_features = self.drop_path(node_features, batch)
         # 第二次残差连接
-        node_output = node_output + node_features
+        # 第二次残差连接 (应用掩码)
+        node_update_amount_2 = torch.zeros_like(node_features)
+        node_update_amount_2[target_node_mask] = node_features[target_node_mask]
+        node_output = node_output + node_update_amount_2
 
         # 边更新路径 (Edge Update Path)
         edge_output = edge_input.clone()
@@ -244,7 +250,10 @@ class E_DiT_Block(torch.nn.Module):
         if self.drop_path is not None:
             edge_update_amount = self.drop_path(edge_update_amount, edge_batch)
         # 第一次残差连接
-        edge_output = edge_output + edge_update_amount
+        # 第一次残差连接 (应用掩码)
+        edge_update_amount_1_masked = torch.zeros_like(edge_update_amount)
+        edge_update_amount_1_masked[target_edge_mask] = edge_update_amount[target_edge_mask]
+        edge_output = edge_output + edge_update_amount_1_masked
 
         # 第二个残差分支(FFN)
         edge_features = edge_output
@@ -261,7 +270,9 @@ class E_DiT_Block(torch.nn.Module):
         if self.drop_path is not None:
             ffn_output = self.drop_path(ffn_output, edge_batch)
         # 第二次残差连接
-        edge_output = edge_output + ffn_output
+        ffn_output_masked = torch.zeros_like(ffn_output)
+        ffn_output_masked[target_edge_mask] = ffn_output[target_edge_mask]
+        edge_output = edge_output + ffn_output_masked
 
         # 坐标更新路径 (Position Update Path)
         # 调用坐标更新模块
@@ -276,7 +287,28 @@ class E_DiT_Block(torch.nn.Module):
             batch=batch
         )
 
-        # 得到更新后的坐标
-        pos_output = pos + delta_pos
+        # 在应用更新之前，使用掩码来选择性地更新坐标
+
+        # 1. 创建一个零向量，形状与 delta_pos 相同。
+        #    这将作为不更新的那些节点的“位移”（即位移为0）。
+        final_delta_pos = torch.zeros_like(delta_pos)
+    
+        # 2. 使用 target_node_mask 作为索引，
+        #    只将计算出的 delta_pos 填充到需要更新的节点位置上。
+        final_delta_pos[target_node_mask] = delta_pos[target_node_mask]
+    
+        # 3. 得到更新后的坐标
+        #    现在，只有被掩码标记的节点的坐标会加上非零的位移。
+        pos_output = pos + final_delta_pos
+
+        # # 调试打印
+        # if target_node_mask.sum() < pos.shape[0]: # 只在策略II（有部分节点不更新时）打印
+        #     print(f"Masked update check: pos changed? {not torch.allclose(pos, pos_output)}")
+        #     print(f"Context nodes pos changed? {not torch.allclose(pos[~target_node_mask], pos_output[~target_node_mask])}")
+        #     print(f"Target nodes pos changed? {not torch.allclose(pos[target_node_mask], pos_output[target_node_mask])}")
+        #     # 期望输出:
+        #     # Masked update check: pos changed? True
+        #     # Context nodes pos changed? False  <-- 关键！
+        #     # Target nodes pos changed? True
         
         return node_output, edge_output, pos_output

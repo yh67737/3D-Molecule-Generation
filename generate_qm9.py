@@ -189,16 +189,16 @@ def generate_molecule(
     model.eval() 
     p_model.eval() # 评估模式 (Evaluation Mode)
 
-    ATOM_MAP = ['H', 'C', 'N', 'O', 'F', 'Absorb']
+    ATOM_MAP = ['C', 'N', 'O', 'F', 'Absorb']
     BOND_MAP = ['Single', 'Double', 'Triple', 'No Bond']
 
     # --- 1. 从一个原子开始 ---
     print("步骤 1: 随机采样第一个原子")
-    # a. 随机原子类型 (H,C,N,O,F)
+    # a. 随机原子类型 (C,N,O,F)
     atom_type_idx_tensor = torch.randint(0, 4, (1,), device=device)
     atom_type_idx = atom_type_idx_tensor.item() # 获取 python int
     atom_symbol = ATOM_MAP[atom_type_idx]      # 从映射中查找符号
-    atom_type = F.one_hot(atom_type_idx_tensor, num_classes=6).float() # 6类，最后一类是吸收态
+    atom_type = F.one_hot(atom_type_idx_tensor, num_classes=5).float() # 5类，最后一类是吸收态
     
     # b. 设置坐标为原点
     pos = torch.zeros(1, 3, device=device)
@@ -228,9 +228,9 @@ def generate_molecule(
         # a. 添加带噪的新原子
         print("步骤 2: 添加带噪的新原子")
         # i. 新原子类型为吸收态
-        absorbing_state_idx = 5
+        absorbing_state_idx = 4
         new_atom_type_idx = torch.tensor([absorbing_state_idx], device=device)
-        new_atom_type = F.one_hot(new_atom_type_idx, num_classes=6).float()
+        new_atom_type = F.one_hot(new_atom_type_idx, num_classes=5).float()
         
         # ii. 随机新原子坐标
         new_pos = torch.randn(1, 3, device=device)
