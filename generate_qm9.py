@@ -254,17 +254,17 @@ def generate_molecule(
     model.eval() 
     p_model.eval() # 评估模式 (Evaluation Mode)
 
-    ATOM_MAP = ['H', 'C', 'N', 'O', 'F', 'Absorb']
+    ATOM_MAP = ['C', 'N', 'O', 'F', 'Absorb']
     BOND_MAP = ['Single', 'Double', 'Triple', 'No Bond']
 
     # --- 1. 从一个原子开始 ---
     print("步骤 1: 随机采样第一个原子")
-    # a. 随机原子类型 (H,C,N,O,F)
-    # atom_type_idx_tensor = torch.randint(0, 4, (1,), device=device)
-    atom_type_idx_tensor = torch.tensor([0], device=device, dtype=torch.long)
+    # a. 随机原子类型 (C,N,O,F)
+    atom_type_idx_tensor = torch.randint(0, 4, (1,), device=device)
+    # atom_type_idx_tensor = torch.tensor([0], device=device, dtype=torch.long)
     atom_type_idx = atom_type_idx_tensor.item() # 获取 python int
     atom_symbol = ATOM_MAP[atom_type_idx]      # 从映射中查找符号
-    atom_type = F.one_hot(atom_type_idx_tensor, num_classes=6).float() # 6类，最后一类是吸收态
+    atom_type = F.one_hot(atom_type_idx_tensor, num_classes=5).float() # 5类，最后一类是吸收态
     
     # b. 设置坐标为原点
     pos = torch.zeros(1, 3, device=device)
@@ -294,10 +294,10 @@ def generate_molecule(
         # a. 添加带噪的新原子
         print("步骤 2: 添加带噪的新原子")
         # i. 新原子类型为吸收态
-        absorbing_state_idx = 5
+        absorbing_state_idx = 4
         new_atom_type_idx = torch.tensor([absorbing_state_idx], device=device)
-        new_atom_type = F.one_hot(new_atom_type_idx, num_classes=6).float()
-        
+        new_atom_type = F.one_hot(new_atom_type_idx, num_classes=5).float()
+
         # ii. 随机新原子坐标
         new_pos = torch.randn(1, 3, device=device)
         
@@ -524,19 +524,19 @@ def generate_molecule(
             # <<<<<<<<<<<<<<<<< 新增代码 START: 打印阶段一每步结果 >>>>>>>>>>>>>>>>>
             # ==============================================================================
             # 在更新数据之前，打印这一步的预测结果
-            print_denoising_step_details(
-                phase="阶段一",
-                step_idx=i,
-                t_current=t_current_val,
-                t_prev=t_prev_val,
-                pos=pos_t_minus_1,
-                atom_types_one_hot=atom_type_t_minus_1,
-                edge_index=denoising_data.edge_index[:, target_edge_mask],
-                edge_attrs_one_hot=bond_attr_t_minus_1_subset,
-                ATOM_MAP=ATOM_MAP,
-                BOND_MAP=BOND_MAP,
-                node_indices=torch.where(target_node_mask)[0] # 传递被更新节点的全局索引
-            )
+            # print_denoising_step_details(
+            #     phase="阶段一",
+            #     step_idx=i,
+            #     t_current=t_current_val,
+            #     t_prev=t_prev_val,
+            #     pos=pos_t_minus_1,
+            #     atom_types_one_hot=atom_type_t_minus_1,
+            #     edge_index=denoising_data.edge_index[:, target_edge_mask],
+            #     edge_attrs_one_hot=bond_attr_t_minus_1_subset,
+            #     ATOM_MAP=ATOM_MAP,
+            #     BOND_MAP=BOND_MAP,
+            #     node_indices=torch.where(target_node_mask)[0] # 传递被更新节点的全局索引
+            # )
             # ==============================================================================
             # <<<<<<<<<<<<<<<<< 新增代码 END >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
             # ==============================================================================
@@ -710,19 +710,19 @@ def generate_molecule(
             # <<<<<<<<<<<<<<<<< 新增代码 START: 打印阶段二每步结果 >>>>>>>>>>>>>>>>>
             # ==============================================================================
             # 打印这一步的全局预测结果
-            print_denoising_step_details(
-                phase="阶段二",
-                step_idx=i,
-                t_current=t_current_val,
-                t_prev=t_prev_val,
-                pos=fragment.pos,
-                atom_types_one_hot=fragment.x,
-                edge_index=fragment.edge_index,
-                edge_attrs_one_hot=fragment.edge_attr,
-                ATOM_MAP=ATOM_MAP,
-                BOND_MAP=BOND_MAP
-                # 此处 node_indices 为 None，因为我们更新并打印整个图
-            )
+            # print_denoising_step_details(
+            #     phase="阶段二",
+            #     step_idx=i,
+            #     t_current=t_current_val,
+            #     t_prev=t_prev_val,
+            #     pos=fragment.pos,
+            #     atom_types_one_hot=fragment.x,
+            #     edge_index=fragment.edge_index,
+            #     edge_attrs_one_hot=fragment.edge_attr,
+            #     ATOM_MAP=ATOM_MAP,
+            #     BOND_MAP=BOND_MAP
+            #     # 此处 node_indices 为 None，因为我们更新并打印整个图
+            # )
             # ==============================================================================
             # <<<<<<<<<<<<<<<<< 新增代码 END >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
             # ==============================================================================
@@ -752,11 +752,11 @@ def generate_molecule(
             # 终止前，移除最后一个未连接的原子
             # (这是一个可选的清理步骤)
             # --- 关键修改：添加 device 参数 ---
-            final_mask = torch.ones(fragment.num_nodes, 
-                                    dtype=torch.bool, 
-                                    device=fragment.x.device) # <-- 和 fragment 在同一设备上
-            final_mask[new_atom_idx] = False
-            fragment = fragment.subgraph(final_mask)
+            # final_mask = torch.ones(fragment.num_nodes, 
+            #                         dtype=torch.bool, 
+            #                         device=fragment.x.device) # <-- 和 fragment 在同一设备上
+            # final_mask[new_atom_idx] = False
+            # fragment = fragment.subgraph(final_mask)
             break
             
     print("\n--- 分子生成完成 ---")

@@ -12,8 +12,8 @@ from mpl_toolkits.mplot3d import Axes3D
 # --- 配置和映射 ---
 
 # 1. 原子类型映射
-ATOM_MAP = ['H', 'C', 'N', 'O', 'F', 'Absorbing']
-ATOM_COLORS = {'H': 'white', 'C': 'black', 'N': 'blue', 'O': 'red', 'F': 'green'}
+ATOM_MAP = ['C', 'N', 'O', 'F', 'Absorbing']
+ATOM_COLORS = {'C': 'black', 'N': 'blue', 'O': 'red', 'F': 'green'}
 
 # 2. 边/键类型 (用于.mol文件)
 BOND_TYPE_MAP = {0: 1, 1: 2, 2: 3} # SINGLE, DOUBLE, TRIPLE
@@ -217,7 +217,7 @@ def visualize_and_save_molecules(pkl_path, image_dir, structure_dir):
 if __name__ == '__main__':
     # --- 用户配置区 ---
     model_name_stem = 'best_model'
-    pkl_file_path = f'output/2025-10-14_09-55-37/generated_pyg/generated_molecules_from_{model_name_stem}.pkl'
+    pkl_file_path = f'output/2025-10-23_16-01-36/generated_pyg/generated_molecules_from_{model_name_stem}.pkl'
     
     output_parent_dir = Path(pkl_file_path).parent
     image_output_dir = os.path.join(output_parent_dir, 'images')
