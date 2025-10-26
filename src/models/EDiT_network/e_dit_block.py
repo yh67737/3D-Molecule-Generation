@@ -143,11 +143,6 @@ class E_DiT_Block(torch.nn.Module):
 
         # 共享路径失活模块：该模块模块无参数、无状态，创建一次和两个效果一样
         self.drop_path = GraphDropPath(drop_path_rate) if drop_path_rate > 0. else None
-        self.edge_updater_gate = torch.nn.Parameter(torch.tensor([1.0]))
-        self.edge_ffn_gate = torch.nn.Parameter(torch.tensor([1.0]))
-
-        self.node_ga_gate = torch.nn.Parameter(torch.tensor([1.0]))
-        self.node_ffn_gate = torch.nn.Parameter(torch.tensor([1.0]))
 
     def forward(self, node_input, node_attr, edge_src, edge_dst,
                 edge_input, edge_attr_type, pos, edge_index, t, batch, target_node_mask, target_edge_mask, **kwargs):
@@ -197,7 +192,6 @@ class E_DiT_Block(torch.nn.Module):
             edge_attr=edge_attr, edge_scalars=edge_scalars,
             batch=batch)
 
-        node_features = node_features * self.node_ga_gate
         
         if self.drop_path is not None:
             node_features = self.drop_path(node_features, batch)
@@ -215,7 +209,6 @@ class E_DiT_Block(torch.nn.Module):
         # Feed-Forward Network        
         node_features = self.node_ffn(node_features, node_attr)
 
-        node_features = node_features * self.node_ffn_gate
 
         if self.ffn_shortcut is not None:
             node_output = self.ffn_shortcut(node_output, node_attr)
@@ -245,7 +238,6 @@ class E_DiT_Block(torch.nn.Module):
             edge_attr = edge_attr,
             edge_index=edge_index
         )
-        edge_update_amount = edge_update_amount * self.edge_updater_gate
 
         if self.drop_path is not None:
             edge_update_amount = self.drop_path(edge_update_amount, edge_batch)
@@ -261,8 +253,6 @@ class E_DiT_Block(torch.nn.Module):
         norm_edge_features = self.edge_norm_2(edge_features, t, edge_batch)
 
         ffn_output = self.edge_ffn(norm_edge_features, edge_attr_type)
-
-        ffn_output = ffn_output * self.edge_ffn_gate
 
         if self.edge_ffn_shortcut is not None:
             edge_output = self.edge_ffn_shortcut(edge_output, edge_attr_type)

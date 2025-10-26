@@ -46,9 +46,10 @@ class EquivariantPosUpdate(nn.Module):
         self.edge_transform = LinearRS(irreps_edge_in, hidden_irreps)
         
         # c.融合节点和边特征
-        self.edge_fusion_tp = FullyConnectedTensorProductRescale(
-            irreps_in1=hidden_irreps, 
-            irreps_in2=hidden_irreps, 
+        fused_irreps_in = (hidden_irreps + hidden_irreps).simplify()
+
+        self.edge_fusion_linear = LinearRS(
+            irreps_in=fused_irreps_in,
             irreps_out=hidden_irreps
         )
 
@@ -98,7 +99,8 @@ class EquivariantPosUpdate(nn.Module):
         fused_nodes = self.node_fusion_tp(src_feat, dst_feat)
         fused_nodes_trans = self.node_transform(fused_nodes)
         edge_trans = self.edge_transform(h_edge)
-        fused_all = self.edge_fusion_tp(fused_nodes_trans, edge_trans)
+        fused_all_concatenated = torch.cat([fused_nodes_trans, edge_trans], dim=-1)
+        fused_all = self.edge_fusion_linear(fused_all_concatenated)
         batch_edge = batch[edge_src] # 为边特征分配对应的批次索引
         normalized_feat = self.norm(fused_all, t, batch_edge)   
         scalar_weight = self.scalar_predictor(normalized_feat) # shape: [num_edges, 1]
