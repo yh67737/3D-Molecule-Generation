@@ -217,7 +217,7 @@ def visualize_and_save_molecules(pkl_path, image_dir, structure_dir):
 if __name__ == '__main__':
     # --- 用户配置区 ---
     model_name_stem = 'best_model'
-    pkl_file_path = f'output/2025-10-23_16-01-36/generated_pyg/generated_molecules_from_{model_name_stem}.pkl'
+    pkl_file_path = f'output/2025-10-24_18-19-41/generated_pyg/generated_molecules_from_{model_name_stem}.pkl'
     
     output_parent_dir = Path(pkl_file_path).parent
     image_output_dir = os.path.join(output_parent_dir, 'images')
