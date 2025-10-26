@@ -176,7 +176,7 @@ def get_args_parser():
     g_embed.add_argument('--edge_update_hidden_dim', type=int, default=32,
                          help='Hidden dimension in EdgeUpdateNetwork scalar MLP.')
     g_embed.add_argument('--num_rbf', type=int, default=64, help='Number of radial basis functions.')
-    g_embed.add_argument('--rbf_cutoff', type=float, default=1000.0, help='Cutoff radius for RBF.')
+    g_embed.add_argument('--rbf_cutoff', type=float, default=10.0, help='Cutoff radius for RBF.')
     g_embed.add_argument('--fc_neurons', type=int, nargs='+', default=[64, 64],
                          help='List of hidden layer sizes for FC network in attention.')
     g_embed.add_argument('--avg_degree', type=float, default=9.28, help='Average degree of nodes in the dataset.')
