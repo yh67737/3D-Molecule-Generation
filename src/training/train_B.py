@@ -403,7 +403,7 @@ def validate(val_loader, model, scheduler, args, amp_autocast):
         t1_per_node, t1_per_edge = t1[clean_batch.batch], t1[clean_batch.batch[clean_batch.edge_index[0]]]
 
         # --- 策略 I: 全局去噪 ---
-        noised_pos_I = scheduler.q_sample(scaled_pos, t1_per_node, noise1, 'alpha')
+        noised_pos_I = scheduler.q_sample(scaled_pos, t1_per_node, noise1, 'piecewise_alpha')
         noised_x_I = noise_discrete_features(clean_batch.x, scheduler.Q_bar_alpha_a, t1_per_node)
         noised_edge_attr_I = noise_discrete_features(clean_batch.edge_attr, scheduler.Q_bar_alpha_b, t1_per_edge)
         noised_data_I = clean_batch.clone(); noised_data_I.pos, noised_data_I.x, noised_data_I.edge_attr = noised_pos_I, noised_x_I, noised_edge_attr_I
@@ -414,7 +414,7 @@ def validate(val_loader, model, scheduler, args, amp_autocast):
         predictions_I = model(noised_data_I, t1, target_node_mask_I, target_edge_mask_I)
         
         lossI_a = calculate_atom_type_loss(predictions_I['atom_type_logits'], clean_batch.x.argmax(dim=-1), args.lambda_aux)
-        lossI_r = calculate_coordinate_loss_wrapper(predictions_I['predicted_r0'], scaled_pos, noised_pos_I, t1_per_node, scheduler, 'alpha')
+        lossI_r = calculate_coordinate_loss_wrapper(predictions_I['predicted_r0'], scaled_pos, noised_pos_I, t1_per_node, scheduler, 'piecewise_alpha')
         lossI_b = calculate_bond_type_loss(predictions_I['bond_logits'], clean_batch.edge_attr.argmax(dim=-1), args.lambda_aux)
         loss_I = args.w_a * lossI_a + args.w_r * lossI_r + args.w_b * lossI_b
 
@@ -427,8 +427,8 @@ def validate(val_loader, model, scheduler, args, amp_autocast):
         t_T1_per_node, t_T1_per_edge = torch.full_like(t1_per_node, scheduler.T1), torch.full_like(t1_per_edge, scheduler.T1)
         t2_per_node, t2_per_edge = t2[clean_batch.batch], t2[clean_batch.batch[clean_batch.edge_index[0]]]
 
-        noised_pos_context = scheduler.q_sample(scaled_pos[context_node_mask_II], t_T1_per_node[context_node_mask_II], noise2[context_node_mask_II], 'alpha')
-        noised_pos_target = scheduler.q_sample(scaled_pos[target_node_mask_II], t2_per_node[target_node_mask_II], noise2[target_node_mask_II], 'delta')
+        noised_pos_context = scheduler.q_sample(scaled_pos[context_node_mask_II], t_T1_per_node[context_node_mask_II], noise2[context_node_mask_II], 'piecewise_alpha')
+        noised_pos_target = scheduler.q_sample(scaled_pos[target_node_mask_II], t2_per_node[target_node_mask_II], noise2[target_node_mask_II], 'piecewise_delta')
         noised_pos_II = torch.zeros_like(scaled_pos); noised_pos_II[context_node_mask_II], noised_pos_II[target_node_mask_II] = noised_pos_context, noised_pos_target
         
         noised_x_context = noise_discrete_features(clean_batch.x[context_node_mask_II], scheduler.Q_bar_alpha_a, t_T1_per_node[context_node_mask_II])
@@ -444,7 +444,7 @@ def validate(val_loader, model, scheduler, args, amp_autocast):
         predictions_II = model(noised_data_II, t2, target_node_mask_II, target_edge_mask)
 
         lossII_a = calculate_atom_type_loss(predictions_II['atom_type_logits'], clean_batch.x[target_node_mask_II].argmax(dim=-1), args.lambda_aux)
-        lossII_r = calculate_coordinate_loss_wrapper(predictions_II['predicted_r0'], scaled_pos[target_node_mask_II], noised_pos_target, t2_per_node[target_node_mask_II], scheduler, 'delta')
+        lossII_r = calculate_coordinate_loss_wrapper(predictions_II['predicted_r0'], scaled_pos[target_node_mask_II], noised_pos_target, t2_per_node[target_node_mask_II], scheduler, 'piecewise_delta')
         lossII_b = calculate_bond_type_loss(predictions_II['bond_logits'], clean_batch.edge_attr[target_edge_mask].argmax(dim=-1), args.lambda_aux)
         loss_II = args.w_a * lossII_a + args.w_r * lossII_r + args.w_b * lossII_b
 
@@ -719,7 +719,7 @@ def train(
                     # --- 策略 I: 全局去噪 (生成噪声图 Ⅰ) ---
             
                     # a. 加噪坐标
-                    noised_pos_I = scheduler.q_sample(scaled_pos, t1_per_node, noise1, schedule_type='alpha')  # 阅读标记
+                    noised_pos_I = scheduler.q_sample(scaled_pos, t1_per_node, noise1, schedule_type='piecewise_alpha')  # 阅读标记
             
                     # b. 加噪原子类型
                     noised_x_I = noise_discrete_features(clean_batch.x, scheduler.Q_bar_alpha_a, t1_per_node)
@@ -758,7 +758,7 @@ def train(
                         r_t=noised_pos_I, 
                         t=t1_per_node, 
                         scheduler=scheduler, 
-                        schedule_type='alpha'
+                        schedule_type='piecewise_alpha'
                     )
                     lossI_b = calculate_bond_type_loss(
                         pred_logits=predictions_I['bond_logits'], 
@@ -792,9 +792,9 @@ def train(
                     # c. 对上下文和目标分别加噪
                     # 坐标
                     # 计算出所有上下文原子的加噪后坐标
-                    noised_pos_context = scheduler.q_sample(scaled_pos[context_node_mask_II], t_T1_per_node[context_node_mask_II], noise2[context_node_mask_II], 'alpha')
+                    noised_pos_context = scheduler.q_sample(scaled_pos[context_node_mask_II], t_T1_per_node[context_node_mask_II], noise2[context_node_mask_II], 'piecewise_alpha')
                     # 计算出所有目标原子的加噪后坐标
-                    noised_pos_target = scheduler.q_sample(scaled_pos[target_node_mask_II], t2_per_node[target_node_mask_II], noise2[target_node_mask_II], 'delta')
+                    noised_pos_target = scheduler.q_sample(scaled_pos[target_node_mask_II], t2_per_node[target_node_mask_II], noise2[target_node_mask_II], 'piecewise_delta')
                     # 创建一个空的“画布”
                     noised_pos_II = torch.zeros_like(scaled_pos)
                     # 将计算好的上下文坐标填充到画布的相应位置
@@ -842,7 +842,7 @@ def train(
                         r_t=noised_pos_target, 
                         t=t2_per_node[target_node_mask_II], 
                         scheduler=scheduler, 
-                        schedule_type='delta'
+                        schedule_type='piecewise_delta'
                     )
                     lossII_b = calculate_bond_type_loss(
                         pred_logits=predictions_II['bond_logits'],

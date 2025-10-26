@@ -190,6 +190,72 @@ class HierarchicalDiffusionScheduler:
         self.coef_xt_delta = (self.gammas.sqrt() * (1.0 - delta_bar_prev)) / one_minus_delta_bar
         self.std_delta     = ((1.0 - delta_bar_prev) * self.gamma_betas / one_minus_delta_bar).clamp(min=0.).sqrt()
 
+        # --- 1. bis. [新增] 专门为坐标计算 MolDiff-like 的两阶段调度表 ---
+        print("[Scheduler] Pre-calculating MolDiff-like piecewise schedule for positions.")
+
+        # --- A. 为坐标的 'alpha' 过程计算调度表 ---
+        T_stage1_piecewise_alpha = 600 # 硬编码或从参数传入
+        T_stage2_piecewise_alpha = T_full - T_stage1_piecewise_alpha
+
+        # 阶段 1
+        t_s1_alpha = torch.linspace(0, T_stage1_piecewise_alpha, T_stage1_piecewise_alpha + 1, device=self.device)
+        bars_s1_alpha = self._sigmoid_schedule(t_s1_alpha, T_stage1_piecewise_alpha, 0.9999, 0.001, 3.0)
+
+        # 阶段 2
+        t_s2_alpha = torch.linspace(0, T_stage2_piecewise_alpha, T_stage2_piecewise_alpha + 1, device=self.device)
+        bars_s2_alpha = self._sigmoid_schedule(t_s2_alpha, T_stage2_piecewise_alpha, 0.001, 0.0001, 2.0)
+
+        # 合并并截取 T1 长度，存储到新属性中
+        piecewise_alpha_bars_full = torch.cat([bars_s1_alpha, bars_s2_alpha[1:]])
+        self.piecewise_alpha_bars = piecewise_alpha_bars_full[:T1 + 1]
+
+
+        # --- B. 为坐标的 'gamma' 过程计算调度表 ---
+        T_stage1_piecewise_gamma = int(T_stage1_piecewise_alpha * T2 / T_full) # 按比例
+        T_stage2_piecewise_gamma = T2 - T_stage1_piecewise_gamma
+
+        # 阶段 1
+        t_s1_gamma = torch.linspace(0, T_stage1_piecewise_gamma, T_stage1_piecewise_gamma + 1, device=self.device)
+        bars_s1_gamma = self._sigmoid_schedule(t_s1_gamma, T_stage1_piecewise_gamma, 0.9999, 0.001, 3.0)
+
+        # 阶段 2
+        t_s2_gamma = torch.linspace(0, T_stage2_piecewise_gamma, T_stage2_piecewise_gamma + 1, device=self.device)
+        bars_s2_gamma = self._sigmoid_schedule(t_s2_gamma, T_stage2_piecewise_gamma, 0.001, 0.0001, 2.0)
+
+        self.piecewise_gamma_bars = torch.cat([bars_s1_gamma, bars_s2_gamma[1:]])
+        
+        # --- C. 计算坐标专用的派生值 ---
+        # 坐标的 delta 调度
+        piecewise_alpha_bar_at_T1 = self.piecewise_alpha_bars[T1]
+        self.piecewise_delta_bars = piecewise_alpha_bar_at_T1 * self.piecewise_gamma_bars
+
+        # Clamp 和 Sqrt 计算
+        min_val = 1e-7
+        self.piecewise_alpha_bars = torch.clamp(self.piecewise_alpha_bars, min=min_val)
+        self.piecewise_delta_bars = torch.clamp(self.piecewise_delta_bars, min=min_val)
+
+        self.sqrt_piecewise_alpha_bars = torch.sqrt(self.piecewise_alpha_bars)
+        self.sqrt_one_minus_piecewise_alpha_bars = torch.sqrt(1.0 - self.piecewise_alpha_bars)
+        self.sqrt_piecewise_delta_bars = torch.sqrt(self.piecewise_delta_bars)
+        self.sqrt_one_minus_piecewise_delta_bars = torch.sqrt(1.0 - self.piecewise_delta_bars)
+
+        # --- 为坐标专用调度计算后验系数 ---
+        # 对于 pos_alpha 日程
+        pos_alpha_bars_prev = torch.cat([torch.tensor([1.0], device=self.device), self.piecewise_alpha_bars[:-1]])
+        pos_alphas = self.piecewise_alpha_bars / pos_alpha_bars_prev
+        pos_betas = 1.0 - pos_alphas
+        one_minus_pos_alpha_bar = (1.0 - self.piecewise_alpha_bars).clamp(min=1e-12)
+        self.coef_x0_pos_alpha = (pos_alpha_bars_prev.sqrt() * pos_betas) / one_minus_pos_alpha_bar
+        self.coef_xt_pos_alpha = (pos_alphas.sqrt() * (1.0 - pos_alpha_bars_prev)) / one_minus_pos_alpha_bar
+        
+        # 对于 pos_delta 日程
+        pos_delta_bars_prev = torch.cat([torch.tensor([1.0], device=self.device), self.piecewise_delta_bars[:-1]])
+        pos_gammas = self.piecewise_gamma_bars / torch.cat([torch.tensor([1.0], device=self.device), self.piecewise_gamma_bars[:-1]])
+        pos_gamma_betas = 1.0 - pos_gammas
+        one_minus_pos_delta_bar = (1.0 - self.piecewise_delta_bars).clamp(min=1e-12)
+        self.coef_x0_pos_delta = (pos_delta_bars_prev.sqrt() * pos_gamma_betas) / one_minus_pos_delta_bar
+        self.coef_xt_pos_delta = (pos_gammas.sqrt() * (1.0 - pos_delta_bars_prev)) / one_minus_pos_delta_bar
+
     def _edm_quadratic_schedule(self, t, T, s_precision):
         """
         EDM 论文中自定义的二次方调度。
@@ -271,6 +337,12 @@ class HierarchicalDiffusionScheduler:
         elif schedule_type == 'delta':
             sqrt_bar = self._get_vals_at_t(self.sqrt_delta_bars, t)
             sqrt_one_minus_bar = self._get_vals_at_t(self.sqrt_one_minus_delta_bars, t)
+        elif schedule_type == 'piecewise_alpha':
+            sqrt_bar = self._get_vals_at_t(self.sqrt_piecewise_alpha_bars, t)
+            sqrt_one_minus_bar = self._get_vals_at_t(self.sqrt_one_minus_piecewise_alpha_bars, t)
+        elif schedule_type == 'piecewise_delta':
+            sqrt_bar = self._get_vals_at_t(self.sqrt_piecewise_delta_bars, t)
+            sqrt_one_minus_bar = self._get_vals_at_t(self.sqrt_one_minus_piecewise_delta_bars, t)
         else:
             raise ValueError(f"Unknown schedule type: {schedule_type}")
         sqrt_bar = sqrt_bar.to(r_0.device)
@@ -285,6 +357,12 @@ class HierarchicalDiffusionScheduler:
         elif schedule_type == 'delta':
             sqrt_bar_t = self._get_vals_at_t(self.sqrt_delta_bars, t)
             sqrt_one_minus_bar_t = self._get_vals_at_t(self.sqrt_one_minus_delta_bars, t)
+        elif schedule_type == 'piecewise_alpha':
+            sqrt_bar_t = self._get_vals_at_t(self.sqrt_piecewise_alpha_bars, t)
+            sqrt_one_minus_bar_t = self._get_vals_at_t(self.sqrt_one_minus_piecewise_alpha_bars, t)
+        elif schedule_type == 'piecewise_delta':
+            sqrt_bar_t = self._get_vals_at_t(self.sqrt_piecewise_delta_bars, t)
+            sqrt_one_minus_bar_t = self._get_vals_at_t(self.sqrt_one_minus_piecewise_delta_bars, t)
         else:
             raise ValueError(f"Unknown schedule type: {schedule_type}")
         predicted_noise = (r_t - sqrt_bar_t * predicted_r0) / torch.clamp(sqrt_one_minus_bar_t, min=1e-8)
