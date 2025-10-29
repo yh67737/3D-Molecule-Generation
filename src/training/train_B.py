@@ -965,10 +965,10 @@ def train(
                 # 'p_noise_I_norm': norm_predicted_noise_I.item(),
                 'grad_norm': grad_norm_to_display, # 显示当前的梯度范数
                 # ==================== 新增的监控项 ====================
-                'p_x0_I_norm': norm_predicted_x0_I,    # 策略 I 预测 x0 的范数
-                't_x0_I_norm': norm_true_x0_I,      # 策略 I 真实 x0 的范数
-                'p_x0_II_norm': norm_predicted_x0_II,   # 策略 II 预测 x0 的范数
-                't_x0_II_norm': norm_true_x0_II,     # 策略 II 真实 x0 的范数
+                'pred_x0_I_norm': norm_predicted_x0_I,    # 策略 I 预测 x0 的范数
+                'true_x0_I_norm': norm_true_x0_I,      # 策略 I 真实 x0 的范数
+                'pred_x0_II_norm': norm_predicted_x0_II,   # 策略 II 预测 x0 的范数
+                'true_x0_II_norm': norm_true_x0_II,     # 策略 II 真实 x0 的范数
                 'first_pred_r0': pred_r0_str       # 策略 II 第一个预测 x0 的值
                 # =======================================================
             })

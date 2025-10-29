@@ -133,10 +133,10 @@ def get_args_parser():
                         help='Directory containing some JSON fragment files.')  ###
     # parser.add_argument('--fragment_data_dir', type=str, default='./prepared_data/gdb9_bfs_fragments_json', help='Directory containing the JSON fragment files.')
     parser.add_argument('--val_split_percentage', type=float, default=0.1, help='Percentage of data to use for validation.')
-    parser.add_argument('--train_batch_size', type=int, default=320)
-    parser.add_argument('--val_batch_size', type=int, default=320)
-    parser.add_argument('--batch_ratio_val', type=int, default=2, help='Ratio to determine number of validation samples (num_val_samples = batch_size * batch_ratio)')
-    parser.add_argument('--batch_ratio_train', type=int, default=25, help='Ratio to determine number of training samples per epoch (num_train_samples = batch_size * batch_ratio)')
+    parser.add_argument('--train_batch_size', type=int, default=24)
+    parser.add_argument('--val_batch_size', type=int, default=4)
+    parser.add_argument('--batch_ratio_val', type=int, default=1, help='Ratio to determine number of validation samples (num_val_samples = batch_size * batch_ratio)')
+    parser.add_argument('--batch_ratio_train', type=int, default=2, help='Ratio to determine number of training samples per epoch (num_train_samples = batch_size * batch_ratio)')
     parser.add_argument('--num_workers', type=int, default=4)
     parser.add_argument('--accumulation_steps', type=int, default=8)
 
@@ -179,7 +179,7 @@ def get_args_parser():
     g_embed.add_argument('--rbf_cutoff', type=float, default=10.0, help='Cutoff radius for RBF.')
     g_embed.add_argument('--fc_neurons', type=int, nargs='+', default=[64, 64],
                          help='List of hidden layer sizes for FC network in attention.')
-    g_embed.add_argument('--avg_degree', type=float, default=9.28, help='Average degree of nodes in the dataset.')
+    g_embed.add_argument('--avg_degree', type=float, default=2.17, help='Average degree of nodes in the dataset.')
     g_embed.add_argument('--max_seq_len', type=int, default=500, help='Introducing position encoding, define the max number of a molecule.')
 
     # --- 注意力机制参数 (Attention Mechanism) ---
