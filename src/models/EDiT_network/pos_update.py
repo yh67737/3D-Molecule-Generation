@@ -5,6 +5,48 @@ from torch_scatter import scatter_sum
 from .layer_norm import AdaEquiLayerNorm
 from .tensor_product_rescale import FullyConnectedTensorProductRescale, LinearRS
 
+
+class ScalarPredictor(nn.Module):
+    def __init__(self, hidden_irreps):
+        """
+        Args:
+            hidden_irreps (o3.Irreps):
+                来自 E_DiT_Block 输出的高维 Irreps,
+                例如 "64x0e + 32x1o + 16x2e"
+        """
+        super().__init__()
+        self.hidden_irreps = o3.Irreps(hidden_irreps)
+        self.tp_self_interaction = o3.FullyConnectedTensorProduct(
+            self.hidden_irreps,
+            self.hidden_irreps,
+            o3.Irreps('32x0e')
+        )
+
+        self.act = nn.SiLU()
+
+        self.final_proj = nn.Linear(32, 1)
+
+
+    def forward(self, x):
+        """
+        Args:
+            x (torch.Tensor):
+                高维特征张量，其 Irreps 必须匹配 self.hidden_irreps
+        Returns:
+            torch.Tensor: 最终的 1x0e 标量输出, 形状 [N, 1]
+        """
+
+        # 1. 执行 (x ⊗ x) -> '32x0e'
+        intermediate_scalar = self.tp_self_interaction(x, x)
+
+        # 2. 激活
+        activated_scalar = self.act(intermediate_scalar)
+
+        # 3. 最终投影
+        final_scalar = self.final_proj(activated_scalar)
+
+        return final_scalar
+
 #等变的坐标更新模块，模仿Moldiff的BondFFN+PosUpdate，将BondFFN的代码融入PosUpdate结构中
 class EquivariantPosUpdate(nn.Module):
     
@@ -60,11 +102,7 @@ class EquivariantPosUpdate(nn.Module):
         )
         
         # e.将归一化后的特征映射为最终的标量权重，输出为'1x0e'
-        self.scalar_predictor = nn.Sequential(
-            LinearRS(hidden_irreps, o3.Irreps('32x0e')), # 先映射到一个中间标量维度
-            nn.SiLU(),
-            LinearRS(o3.Irreps('32x0e'), o3.Irreps('1x0e'))  # 再映射到最终的1x0e
-        )
+        self.scalar_predictor = ScalarPredictor(hidden_irreps)
 
     def forward(self, 
                 h_node: torch.Tensor, 

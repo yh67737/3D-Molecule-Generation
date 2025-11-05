@@ -11,6 +11,35 @@ from .tensor_product_rescale import LinearRS, FullyConnectedTensorProductRescale
 _RESCALE = True
 _USE_BIAS = True
 
+def _debug_print_irreps_norm(tensor_name: str, tensor: torch.Tensor, irreps_blueprint: o3.Irreps):
+    """一个独立的辅助函数，用于打印张量的分解范数。"""
+    print(f"\n--- [Debug] 正在分析 '{tensor_name}' (形状: {tensor.shape}) ---")
+    print(f"  - 使用蓝图: {irreps_blueprint}")
+    
+    if tensor.shape[-1] != irreps_blueprint.dim:
+        print(f"  - 🔴 严重错误: 张量维度 ({tensor.shape[-1]}) 与蓝图维度 ({irreps_blueprint.dim}) 不匹配！")
+        return
+
+    print("  - 分解范数:")
+    current_start_dim = 0
+    for mul, ir in irreps_blueprint:
+        part_dim = mul * ir.dim
+        start_index = current_start_dim
+        
+        feature_part = tensor.narrow(1, start_index, part_dim)
+        norm = torch.linalg.norm(feature_part).item()
+        
+        log_str = f"    - Irrep '{mul}{ir}': "
+        log_str += f"维度范围 [{start_index}:{start_index + part_dim - 1}], "
+        log_str += f"范数 = {norm:.6f}"
+        print(log_str)
+        
+        if ir.l > 0 and norm < 1e-6:
+            print(f"    - 🔴 警告: 高阶部分 l={ir.l} 的范数接近于零！")
+            
+        current_start_dim += part_dim
+    print("--- 结束分析 ---")
+
 @torch.jit.script
 def gaussian(x, mean, std):
     """高斯概率密度函数"""
@@ -232,12 +261,17 @@ def DepthwiseTensorProduct(irreps_node_input, irreps_edge_attr, irreps_node_outp
     return tp  
 
 class EdgeDegreeEmbeddingNetwork(torch.nn.Module):
-    def __init__(self, irreps_node_embedding, irreps_edge_attr, 
+    def __init__(self, num_atom_types, hidden_dim, irreps_node_embedding, irreps_edge_attr, 
                  avg_aggregate_num, fc_neurons=[64, 64]): ### avg_aggregate_num
-        super().__init__()
+        super().__init__()    
+        # 成环信息嵌入层
+        self.ring_embedding = nn.Embedding(num_embeddings=2, embedding_dim=hidden_dim) 
+        # 原子类型嵌入层
+        self.atom_type_embedding = nn.Linear(num_atom_types, hidden_dim, bias=False)
+
         self.exp = LinearRS(o3.Irreps('1x0e'), irreps_node_embedding, 
             bias=_USE_BIAS, rescale=_RESCALE)
-        self.dw = DepthwiseTensorProduct(irreps_node_embedding, 
+        self.dw = DepthwiseTensorProduct(o3.Irreps(f'{hidden_dim}x0e'), 
             irreps_edge_attr, irreps_node_embedding, 
             internal_weights=False, bias=False)
         self.rad = RadialProfile(fc_neurons + [self.dw.tp.weight_numel])
@@ -248,9 +282,23 @@ class EdgeDegreeEmbeddingNetwork(torch.nn.Module):
         self.scale_scatter = ScaledScatter(avg_aggregate_num)
         
     
-    def forward(self, node_input, edge_attr, edge_scalars, edge_src, edge_dst, batch):
-        node_features = torch.ones_like(node_input.narrow(1, 0, 1))
-        node_features = self.exp(node_features)
+    def forward(self, atom_type_onehot: torch.Tensor, ring_info: torch.Tensor, edge_attr, edge_scalars, edge_src, edge_dst, batch):
+        # 确保ring_info形状正确[num_nodes, 1]
+        if ring_info.ndim == 1:
+            ring_info = ring_info.unsqueeze(-1)
+            
+        # 将成环标志(0/1)通过Embedding层映射
+        ring_embeds = self.ring_embedding(ring_info.long().squeeze(-1))
+        # 将原子类型通过Embedding层映射
+        atom_type_embeds = self.atom_type_embedding(atom_type_onehot.float())
+        node_features = ring_embeds + atom_type_embeds
+        # if debug_irreps_blueprint is not None:
+        #     # 调用我们上面定义的辅助函数
+        #     _debug_print_irreps_norm(
+        #         "node_features (after self.exp)",
+        #         node_features,
+        #         debug_irreps_blueprint
+        #     )
         weight = self.rad(edge_scalars)
         edge_features = self.dw(node_features[edge_src], edge_attr, weight)
         edge_features = self.proj(edge_features)
@@ -358,6 +406,8 @@ class InputEmbeddingLayer(nn.Module):
             irreps_out_fused=self.irreps_edge_fused
         )
         self.edge_degree_net = EdgeDegreeEmbeddingNetwork(
+            num_atom_types=num_atom_types,
+            hidden_dim=node_embedding_hidden_dim,
             irreps_node_embedding=self.irreps_node_embedding,
             irreps_edge_attr=self.irreps_sh,
             fc_neurons=[num_rbf, num_rbf],
@@ -398,7 +448,8 @@ class InputEmbeddingLayer(nn.Module):
 
         # 为节点注入几何信息
         edge_degree_supplement = self.edge_degree_net(
-            node_input=initial_node_embedding,
+            atom_type_onehot=data.x,
+            ring_info=data.pring_out,
             edge_attr=edge_info['edge_attr_base'],
             edge_scalars=edge_info['edge_scalars_base'],
             edge_src=edge_info['edge_src'],
@@ -407,7 +458,7 @@ class InputEmbeddingLayer(nn.Module):
         )
 
         # 最终节点特征融合
-        final_node_features = initial_node_embedding + edge_degree_supplement
+        final_node_features = edge_degree_supplement
 
         # 为节点特征添加位置编码
         # 为批处理中的每个图生成从0开始的原子索引

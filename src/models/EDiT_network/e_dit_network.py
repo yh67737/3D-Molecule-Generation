@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from e3nn import o3
 from e3nn.o3 import Irreps
 from .tensor_product_rescale import LinearRS, FullyConnectedTensorProductRescale
 from .mul_head_graph_attention import get_norm_layer
@@ -121,8 +122,8 @@ class E_DiT_Network(nn.Module):
                 irreps_block_node_output = irreps_node_hidden
                 irreps_block_edge_output = irreps_edge
             else:
-                irreps_block_node_output = irreps_final_node_feature
-                irreps_block_edge_output = irreps_final_edge_feature
+                irreps_block_node_output = irreps_node_hidden 
+                irreps_block_edge_output = irreps_edge # 最后一个Block输出与前面保持一致
             block = E_DiT_Block(
                 max_radius=args.rbf_cutoff,
                 number_of_basis = args.num_rbf,
@@ -171,6 +172,26 @@ class E_DiT_Network(nn.Module):
             args=args
         )
 
+        target_scalar_irreps_node = irreps_final_node_feature
+        target_scalar_irreps_edge = irreps_final_edge_feature # 仅包含标量部分
+
+        # 为节点特征 h 创建 FCTP
+        self.h_self_projection = FullyConnectedTensorProductRescale(
+            irreps_in1=irreps_node_hidden,
+            irreps_in2=irreps_node_hidden, # 输入1和输入2的 Irreps 相同
+            irreps_out=target_scalar_irreps_node,   # 输出是纯标量
+            internal_weights=True # 让它自己管理权重
+        )
+
+        # 为边特征 e 创建 FCTP
+        self.e_self_projection = FullyConnectedTensorProductRescale(
+            irreps_in1=irreps_edge,
+            irreps_in2=irreps_edge,
+            irreps_out=target_scalar_irreps_edge,
+            internal_weights=True
+        )
+
+
     def forward(self,
                 data,
                 t: torch.Tensor,
@@ -204,7 +225,13 @@ class E_DiT_Network(nn.Module):
             embedded_inputs['target_edge_mask'] = target_edge_mask
 
             # 使用字典解包 ** 来传递所有参数，并单独传递时间步 t
-            h, e, pos = block(t=t, **embedded_inputs)
+            h, e, pos = block(t=t, **embedded_inputs) # 这里h和e带有高维特征
+
+        h_scalar = self.h_self_projection(h, h) # 将 h 同时作为 in1 和 in2 传入进行投影
+        e_scalar = self.e_self_projection(e, e) # 将 e 同时作为 in1 和 in2 传入进行投影
+
+        h = h_scalar
+        e = e_scalar
 
         # 最终层归一化
         h = self.final_norm(h, t, batch)
