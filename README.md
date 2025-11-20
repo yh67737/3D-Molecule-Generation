@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/badge/License-MIT-green)](./LICENSE)
 [![Status](https://img.shields.io/badge/Status-Research_Preview-yellow)]()
 
-> **SITP Project (Student Innovation Training Program)** > **Advisor:** Prof. Jingyi Lu
+> **SITP Project (Student Innovation Training Program)** 
 
 ## 📖 Introduction
 
@@ -35,12 +35,3 @@ In addition, we provide an interactive property prediction system based on GCN/C
 
 The core model utilizes an **E-DiT (Equivariant Diffusion Transformer)** backbone. It processes molecular graphs while respecting SE(3) symmetry, ensuring that the generated 3D coordinates are physically valid.
 
-## 💻 Installation & Usage
-
-```bash
-# Clone the repository
-git clone [https://github.com/YourUsername/Your-Repo-Name.git](https://github.com/YourUsername/Your-Repo-Name.git)
-cd Your-Repo-Name
-
-# Install dependencies
-pip install -r requirements.txt
