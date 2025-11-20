@@ -31,7 +31,5 @@ In addition, we provide an interactive property prediction system based on GCN/C
 
 ## 🛠️ Model Architecture
 
-*[Place your model architecture diagram here, e.g., architecture.png]*
-
 The core model utilizes an **E-DiT (Equivariant Diffusion Transformer)** backbone. It processes molecular graphs while respecting SE(3) symmetry, ensuring that the generated 3D coordinates are physically valid.
 
